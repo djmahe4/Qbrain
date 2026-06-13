@@ -6,6 +6,7 @@ import random
 import os
 import yaml
 from typing import Optional
+import sys
 
 from brain.config import Config
 from brain.indexer import Indexer
@@ -520,5 +521,23 @@ def library_sync():
 
 
 if __name__ == "__main__":
+    sys.stdout.reconfigure(
+        encoding="utf-8",
+        errors="replace"
+    )
+    banner="""
+▄▄▄▄▄  ▄▄▄▄▄  ▄▄▄▄▄ ▄▄▄▄▄  ▄▄ ▄▄▄▄▄ 
+▓▓ ▓▓▓ ▓▓ ▓▓▓ ▓▓ ▓▀ ▓▓▓ ▓▓ ▓▓ ▓▓ ▓▓▓
+░░ ░░░ ░▀▀░░▄ ░░    ░░▀▀░░ ░░ ░░ ░░░
+██▀▄██ ██ ███ ██    ██ ███ ██ ██ ███
+▀▓▓▓▓▄ ▓▓▓▓▓▀ ▓▓    ▓▓ ▓▓▓ ▓▓ ▓▓ ▓▓▓
+
+- djmahe4
+    """
+    
+    BLUE_GREEN = "\033[38;2;0;220;200m"
+    RESET = "\033[0m"
+
+    sys.stdout.write(BLUE_GREEN + banner + RESET)
     app()
 

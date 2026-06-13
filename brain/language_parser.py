@@ -251,6 +251,78 @@ def _extract_returns_rust(docstring: str) -> Dict[str, str]:
     desc = block_m.group(1).strip().lstrip("* ").strip()
     return {"type": "", "description": desc}
 
+def _extract_module_comments(docstring: str) -> List[str]:
+    """Extract top-level module comments in Rust (/// or //!)."""
+    block_m = _RUST_LINE_RE.findall(docstring)
+    if not block_m:
+        return []
+    return [l for l in block_m if l]
+
+def _extract_business_rules_rust(docstring: str) -> List[str]:
+    lines = _extract_module_comments(docstring)
+    KEYWORDS = {
+    # rules / constraints
+    "only",
+    "must",
+    "should",
+    "requires",
+    "ensures",
+    "guarantees",
+    "prevents",
+    "allows",
+    "forbids",
+
+    # validation / security
+    "validates",
+    "checks",
+    "verifies",
+    "authorizes",
+    "permits",
+    "rejects",
+
+    # state changes
+    "creates",
+    "updates",
+    "deletes",
+    "changes",
+    "transitions",
+    "moves",
+
+    # blockchain / asset logic
+    "owns",
+    "owner",
+    "owned",
+    "transfers",
+    "transfer",
+    "mints",
+    "mint",
+    "burns",
+    "burn",
+
+    # Rust ownership signals
+    "takes",
+    "take",
+    "moves",
+    "move",
+    "borrows",
+    "borrow",
+    "borrows_mut",
+    "clone",
+    "clones",
+    "drops",
+    "drop",
+
+    # events
+    "emits",
+    "publishes",
+    "notifies"
+    }
+    rules: List[str] = []
+    for line in lines:
+        words = set(line.lower().split())
+        if words & KEYWORDS:
+            rules.append(line.strip())
+    return rules
 
 # ─────────────────────────── C/C++ (Doxygen) ───────────────────────────
 
@@ -351,9 +423,11 @@ def extract_business_rules(docstring: str, language: str) -> List[str]:
         return _extract_business_rules_natspec(docstring)
     elif lang == "go":
         return _extract_business_rules_go(docstring)
+    elif lang == "rust":
+        return _extract_business_rules_rust(docstring)
     elif lang in ("cpp", "c"):
         return _extract_business_rules_cpp(docstring)
-    # For Python/TS/JS/Rust: extract first meaningful sentences as rules
+    # For Python/TS/JS: extract first meaningful sentences as rules
     # Simple heuristic: sentences containing business keywords
     KEYWORDS = {"only", "must", "should", "validates", "ensures", "requires", "checks",
                 "verifies", "authorizes", "emits", "transfers", "mints", "burns"}

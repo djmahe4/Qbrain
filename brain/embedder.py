@@ -1,5 +1,6 @@
 import numpy as np
 from typing import List, Union
+from sentence_transformers import SentenceTransformer
 
 class Embedder:
     _model = None
@@ -11,7 +12,6 @@ class Embedder:
         if Embedder._model is None:
             # Lazy load sentence-transformers to speed up startup times when not embedding
             try:
-                from sentence_transformers import SentenceTransformer
                 Embedder._model = SentenceTransformer(self.model_name)
             except ImportError as e:
                 raise ImportError(

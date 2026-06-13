@@ -1,3 +1,7 @@
+"""
+BranchDiff module for comparing two git branches and identifying added, deleted, and semantically changed files.
+"""
+
 import subprocess
 import re
 from typing import List, Dict, Any, Tuple, Set
@@ -5,6 +9,9 @@ from brain.config import Config
 from brain.embedder import Embedder
 
 class BranchDiff:
+    """
+    Class to compare two git branches and identify added, deleted, and semantically changed files.
+    """
     def __init__(self, config: Config, embedder: Embedder):
         self.config = config
         self.embedder = embedder

@@ -1,7 +1,7 @@
 import os
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Dict, List
 
 try:
     import tomllib  # Python 3.11+
@@ -156,7 +156,7 @@ class EntrypointFinder:
         # 5. Fallback scan
         FALLBACK_NAMES = [
             "main.cpp", "main.c", "main.go", "main.rs",
-            "index.js", "index.ts", "app.py", "main.py",
+            "index.js", "index.ts", "app.py", "main.py","index.php",
             "server.js", "server.ts", "index.jsx", "index.tsx"
         ]
         

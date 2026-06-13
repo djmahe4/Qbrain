@@ -3,7 +3,7 @@ import json
 import time
 import shutil
 import fnmatch
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 from apscheduler.schedulers.blocking import BlockingScheduler
 from brain.config import Config
 from brain.indexer import Indexer
