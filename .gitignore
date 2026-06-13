@@ -1,0 +1,11 @@
+src/
+.venv/
+node_modules/
+*.ts
+tsconfig.json
+package-lock.json
+package.json
+jest.config.js
+*.js
+docs/audit_*
+**/__pycache__/**
