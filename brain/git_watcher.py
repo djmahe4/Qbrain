@@ -4,6 +4,10 @@ import time
 import shutil
 import fnmatch
 from typing import Dict, Any
+from brain.logger import get_logger
+
+logger = get_logger(__name__)
+
 from apscheduler.schedulers.blocking import BlockingScheduler
 from brain.config import Config
 from brain.indexer import Indexer
@@ -69,8 +73,8 @@ class GitWatcher:
         try:
             with open(self.state_file, "w") as f:
                 json.dump({"last_commit": commit_hash, "timestamp": time.time()}, f)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.error(f"Error saving watcher state to {self.state_file}: {e}")
 
     def check_diff(self):
         """
@@ -140,7 +144,7 @@ class GitWatcher:
             print("[Cron] Codebase physics updated successfully.")
 
         except Exception as e:
-            print(f"[Cron] Error checking semantic changes: {e}")
+            logger.error(f"[Cron] Error checking semantic changes: {e}")
 
     def sync_branch_lru(self):
         """Periodic job: re-run dependency mapping to keep the LRU cache warm."""
@@ -151,7 +155,7 @@ class GitWatcher:
             dep_mapper.write_to_graph(deps)
             print(f"[Cron/LRU] Synced {len(deps)} dependency edges.")
         except Exception as e:
-            print(f"[Cron/LRU] LRU sync failed: {e}")
+            logger.error(f"[Cron/LRU] LRU sync failed: {e}")
 
     def start(self):
         diff_interval = self.config.cron_config.get("git_diff_check_interval_minutes", 5)
@@ -173,12 +177,12 @@ class GitWatcher:
             next_run_time=None
         )
 
-        print(f"Starting Quantum Brain Watcher Cron "
-              f"(diff interval: {diff_interval}m, lru sync interval: {lru_interval}m)...")
+        logger.info(f"Starting Quantum Brain Watcher Cron "
+                    f"(diff interval: {diff_interval}m, lru sync interval: {lru_interval}m)...")
 
         # Trigger an initial check immediately
         self.check_diff()
         try:
             self.scheduler.start()
         except (KeyboardInterrupt, SystemExit):
-            print("Stopping Watcher Cron.")
+            logger.info("Stopping Watcher Cron.")

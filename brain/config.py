@@ -1,3 +1,7 @@
+from brain.logger import get_logger
+
+logger = get_logger(__name__)
+
 import os
 import json
 from pathlib import Path
@@ -53,7 +57,7 @@ class Config:
                     self.data["rules"] = self._merge_dicts(self.data.get("rules", {}), user_rules)
             except Exception as e:
                 import sys
-                print(f"Warning: Failed to parse rules file '{rules_path}': {e}", file=sys.stderr)
+                logger.warning(f"Failed to parse rules file '{rules_path}': {e}")
 
 
     def load_config(self) -> Dict[str, Any]:

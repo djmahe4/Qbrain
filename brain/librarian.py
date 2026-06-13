@@ -8,15 +8,22 @@ class LibrarianEngine:
         self.vault_path = os.path.abspath(vault_path)
         self.lock_file = os.path.join(self.repo_path, ".qbrain.lock")
 
+    def _safe_path(self, *parts: str) -> str:
+        """Ensure the resulting path is within the vault_path to prevent traversal."""
+        full_path = os.path.abspath(os.path.join(self.vault_path, *parts))
+        if not full_path.startswith(self.vault_path):
+            raise ValueError(f"Security Risk: Path traversal detected! {full_path} is outside {self.vault_path}")
+        return full_path
+
     def setup_vault(self):
-        os.makedirs(os.path.join(self.vault_path, "symbols"), exist_ok=True)
-        os.makedirs(os.path.join(self.vault_path, "files"), exist_ok=True)
-        os.makedirs(os.path.join(self.vault_path, "behaviors"), exist_ok=True)
-        os.makedirs(os.path.join(self.vault_path, "changes", "recent"), exist_ok=True)
-        os.makedirs(os.path.join(self.vault_path, "changes", "archive"), exist_ok=True)
-        os.makedirs(os.path.join(self.vault_path, "rules"), exist_ok=True)
+        os.makedirs(self._safe_path("symbols"), exist_ok=True)
+        os.makedirs(self._safe_path("files"), exist_ok=True)
+        os.makedirs(self._safe_path("behaviors"), exist_ok=True)
+        os.makedirs(self._safe_path("changes", "recent"), exist_ok=True)
+        os.makedirs(self._safe_path("changes", "archive"), exist_ok=True)
+        os.makedirs(self._safe_path("rules"), exist_ok=True)
         
-        baseline_file = os.path.join(self.vault_path, "baseline.md")
+        baseline_file = self._safe_path("baseline.md")
         if not os.path.exists(baseline_file):
             with open(baseline_file, "w", encoding="utf-8") as f:
                 f.write("# Baseline Snapshot\n\nThis is the initial snapshot of the repository state.")
@@ -86,7 +93,7 @@ class LibrarianEngine:
             "signature": symbol_data.get("signature")
         }
         
-        filepath = os.path.join(self.vault_path, "symbols", f"{name}.md")
+        filepath = self._safe_path("symbols", f"{name}.md")
         with open(filepath, "w", encoding="utf-8") as f:
             f.write("---\n")
             yaml.safe_dump(frontmatter, f, default_flow_style=False)
@@ -118,7 +125,7 @@ class LibrarianEngine:
             "states": behavior_data.get("states", [])
         }
         
-        filepath = os.path.join(self.vault_path, "behaviors", f"{name}.md")
+        filepath = self._safe_path("behaviors", f"{name}.md")
         with open(filepath, "w", encoding="utf-8") as f:
             f.write("---\n")
             yaml.safe_dump(frontmatter, f, default_flow_style=False)
@@ -147,7 +154,7 @@ class LibrarianEngine:
             f.write("```\n")
 
     def export_warnings(self, warnings_list: list):
-        filepath = os.path.join(self.vault_path, "rules", "warnings.md")
+        filepath = self._safe_path("rules", "warnings.md")
         with open(filepath, "w", encoding="utf-8") as f:
             f.write("# Docstring & Quality Invariants Warnings\n\n")
             if not warnings_list:

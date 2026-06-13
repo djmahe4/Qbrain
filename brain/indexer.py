@@ -1,5 +1,10 @@
+import os
 import json
 import subprocess
+from brain.logger import get_logger
+
+logger = get_logger(__name__)
+
 from typing import Dict, Any, Optional
 from brain.config import Config
 
@@ -15,7 +20,24 @@ class Indexer:
         import shutil
         import sys
 
+
         binary = self.config.cbm_binary
+
+        # Security check: Validate binary name
+        allowed_binaries = {"codebase-memory-mcp", "cbm-cli", "qbrain-helper"}
+        
+        # Extract basename if it's a path
+        binary_basename = os.path.basename(binary).lower()
+        if binary_basename.endswith((".exe", ".cmd", ".bat")):
+            binary_basename = os.path.splitext(binary_basename)[0]
+            
+        if binary_basename not in allowed_binaries and not os.environ.get("QBRAIN_ALLOW_UNSAFE_BINARY"):
+            raise RuntimeError(
+                f"Security Risk: Unrecognized binary '{binary}'. "
+                f"Allowed binaries are: {', '.join(allowed_binaries)}. "
+                "To override, set QBRAIN_ALLOW_UNSAFE_BINARY=1"
+            )
+
         resolved_binary = shutil.which(binary)
         if not resolved_binary and sys.platform == "win32":
             for ext in [".cmd", ".bat", ".exe"]:
@@ -28,6 +50,7 @@ class Indexer:
         args_str = json.dumps(args)
         cmd = [exec_binary, "cli", tool_name, args_str]
 
+        logger.info(f"Running Indexer CLI tool: {tool_name}")
         try:
             result = subprocess.run(
                 cmd,
