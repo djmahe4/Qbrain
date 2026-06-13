@@ -51,7 +51,7 @@ Behaviors are written to the vault using a hybrid markdown format designed for b
 - **Human Visualization**: Mermaid class/state diagrams (`stateDiagram-v2`) showing states, flows, and execution path conditions.
 - **Machine/LLM Representation**: Structured YAML Frontmatter metadata containing states lists, endpoints, triggers, and signatures.
 
-```markdown
+````markdown
 ---
 type: behavior
 name: auth-flow
@@ -72,7 +72,7 @@ stateDiagram-v2
     VALIDATE --> SUCCESS: valid_credentials
     VALIDATE --> FAILURE: invalid_credentials
 ```
-```
+````
 
 ---
 

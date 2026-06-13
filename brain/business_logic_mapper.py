@@ -135,6 +135,19 @@ class BusinessLogicMapper:
                 # Cap confidence at 0.6 for fallback docstring scan
                 rules.append(BusinessRule(cat, docstring[:200].strip(), func_name, min(confidence, 0.6)))
 
+
+        # 3. New: Scan code_snippet for technical markers
+        code = genome.get("code_snippet") or ""
+        if code:
+            # Authorization markers: decorators or common check functions
+            if re.search(r"@\w*(authorized|requires|guard|protected|auth)\b", code, re.IGNORECASE) or \
+               re.search(r"\b(check_permission|is_admin|has_role|authorize)\s*\(", code, re.IGNORECASE):
+                rules.append(BusinessRule("authorization", "Technical authorization check detected in code", func_name, 0.85))
+            
+            # Validation markers: schema library usage
+            if re.search(r"\b(zod|yup|joi|validator|schema)\.(parse|validate|check)\b", code, re.IGNORECASE):
+                rules.append(BusinessRule("validation", "Technical schema validation detected in code", func_name, 0.85))
+
         return rules
 
     def write_rules_to_graph(self, rules: List[BusinessRule]) -> None:

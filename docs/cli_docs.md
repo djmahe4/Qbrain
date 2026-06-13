@@ -36,4 +36,5 @@ The CLI logic is modularized into `brain/commands/` for better maintainability:
 - **`qbrain entrypoints`**: Locates and lists main codebase entrypoints by parsing configurations (package.json, Cargo.toml, pyproject.toml, YAML) or falling back to a source file scan.
 - **`qbrain projects`**: Lists all indexed projects in the centralized registry and checks whether their local Obsidian vault directories are initialized and configured.
 - **`qbrain library sync`**: Synchronizes the codebase memory graph symbols and behavioral flow models directly to the local Obsidian vault, using PID-based lock protection to avoid background collisions.
+- **`qbrain audit`**: Runs the code security checks against the codebase and generates a report of findings, categorized by severity and CWE type (Only Business Logic).
 

@@ -8,7 +8,7 @@ from brain.config import Config
 from brain.indexer import Indexer
 from brain.embedder import Embedder
 from brain.quantum_scorer import QuantumScorer
-from brain.commands import index, monitor, query, library
+from brain.commands import index, monitor, query, library, audit
 
 
 app = typer.Typer(
@@ -100,6 +100,11 @@ def projects():
     """List all indexed projects and check if their vault folders are initialized."""
     config, indexer, _, _ = get_engine()
     query.list_projects(config, indexer, console)
+@app.command()
+def audit():
+    """Scan the codebase memory graph for potential business logic vulnerabilities."""
+    config, indexer, _, _ = get_engine()
+    audit.audit_vulnerabilities(config, indexer, console)
 
 
 

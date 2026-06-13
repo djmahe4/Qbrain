@@ -475,6 +475,7 @@ class LanguageParser:
         params = extract_params(docstring, language)
         returns = extract_returns(docstring, language)
         rules = extract_business_rules(docstring, language)
+        code_snippet = record.get("code_snippet") or ""
 
         warnings = []
         warnings.extend(self.parse_coding_standards(record))
@@ -491,7 +492,8 @@ class LanguageParser:
 
         return {
             "name": name,
-            "file": file_path,
+            "business_rules": rules,
+            "code_snippet": code_snippet,
             "signature": signature,
             "docstring": docstring,
             "language": language,
