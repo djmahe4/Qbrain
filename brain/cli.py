@@ -476,18 +476,31 @@ def library_sync():
             console.print("Exporting symbols...")
             parser = DocstringParser(indexer)
             funcs = parser.get_functions_with_docstrings()
+            all_warnings = []
             for f in funcs:
+                parsed_genome = parser.parse_genome(f)
+                if parsed_genome.get("warnings"):
+                    all_warnings.append({
+                        "name": parsed_genome.get("name"),
+                        "file": parsed_genome.get("file"),
+                        "warnings": parsed_genome.get("warnings")
+                    })
                 symbol_data = {
                     "name": f.get("name"),
                     "language": f.get("language") or "generic",
                     "file": f.get("file"),
                     "signature": f.get("signature") or f.get("name"),
                     "docstring": f.get("docstring"),
-                    "params": f.get("params", []),
-                    "returns": f.get("returns", {}),
-                    "business_rules": f.get("business_rules", [])
+                    "params": parsed_genome.get("params", []),
+                    "returns": parsed_genome.get("returns", {}),
+                    "business_rules": parsed_genome.get("business_rules", [])
                 }
                 engine.export_symbol(symbol_data)
+            
+            # Export warnings
+            engine.export_warnings(all_warnings)
+            if all_warnings:
+                console.print(f"[yellow]⚠️  Found {len(all_warnings)} docstring/quality warnings! Saved to vault rules/warnings.md.[/yellow]")
                 
             # Export behaviors
             console.print("Exporting behavior models...")

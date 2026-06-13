@@ -418,6 +418,18 @@ class LanguageParser:
         returns = extract_returns(docstring, language)
         rules = extract_business_rules(docstring, language)
 
+        warnings = []
+        if not docstring or not docstring.strip():
+            warnings.append("Missing docstring")
+        else:
+            # Check if signature has params but parsed params is empty
+            if "(" in signature and ")" in signature:
+                sig_content = signature.split("(", 1)[1].rsplit(")", 1)[0]
+                sig_params = [p.strip() for p in sig_content.split(",") if p.strip()]
+                # If there are params in signature but none parsed in docstring (for languages supporting params)
+                if sig_params and not params and language.lower() in ("python", "javascript", "typescript", "solidity", "rust", "cpp", "c"):
+                    warnings.append("Malformed docstring: signature parameters are not documented")
+
         return {
             "name": name,
             "file": file_path,
@@ -427,4 +439,5 @@ class LanguageParser:
             "params": params,
             "returns": returns,
             "business_rules": rules,
+            "warnings": warnings,
         }

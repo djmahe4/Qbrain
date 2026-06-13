@@ -95,3 +95,25 @@ def test_librarian_exports_behavior_state_machine(tmp_path):
     assert "type: behavior" in content
     assert "stateDiagram-v2" in content
     assert "VALIDATING --> SUCCESS" in content
+
+
+def test_librarian_exports_warnings(tmp_path):
+    vault_path = tmp_path / "obsidian_vault"
+    engine = LibrarianEngine(str(tmp_path), str(vault_path))
+    engine.setup_vault()
+
+    warnings_list = [
+        {"name": "badFunc", "file": "src/bad.py", "warnings": ["Missing docstring"]},
+        {"name": "mismatchedFunc", "file": "src/mismatch.js", "warnings": ["Malformed docstring: signature parameters are not documented"]}
+    ]
+
+    engine.export_warnings(warnings_list)
+    warnings_file = vault_path / "rules" / "warnings.md"
+    assert os.path.exists(warnings_file)
+    with open(warnings_file, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    assert "# Docstring & Quality Invariants Warnings" in content
+    assert "[[badFunc]]" in content
+    assert "mismatchedFunc" in content
+    assert "signature parameters are not documented" in content

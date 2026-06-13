@@ -71,3 +71,16 @@ If `quant-blm` is initialized or indexed in a workspace directory where `.git` i
 1. It runs `git init` to set up local version control.
 2. It generates a default rules configuration `.qbrain-rules.yaml` prescribing keep thresholds, weights for commits, and glob filters.
 3. It initializes the baseline vault template folder structure for developers to start recording architecture decisions.
+4. The brain analyzes user-provided keywords (e.g., "high-throughput payment gateway", "solidity dex", "real-time chat service") and outputs:
+   - A recommended tech stack (e.g., choice of language, databases, frameworks).
+   - A custom `.qbrain-rules.yaml` containing matching keywords, weights, and parsing regexes tailored to the selected languages.
+   - A step-by-step implementation plan and architectural guidelines to write code that aligns with the target design.
+
+---
+
+## 5. Docstring & Quality Invariants Warnings
+
+During `qbrain library sync`, the system evaluates the structural completeness of each symbol's documentation:
+- **Missing Docstrings**: Triggers a warning if a function or method has an empty or missing comment block.
+- **Malformed Docstrings**: Compares signature parameters against documented `@param` parameters. For languages like Python, JS/TS, C++, Go, Rust, and Solidity, a warning is raised if parameters declared in the signature are completely undocumented.
+- **Reporting**: Discovered violations are compiled and saved to `rules/warnings.md` in the Obsidian vault, using standard Markdown tables with internal linkages.

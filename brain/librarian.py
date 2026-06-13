@@ -145,3 +145,18 @@ class LibrarianEngine:
                     f.write(f"    {frm} --> {to}\n")
             
             f.write("```\n")
+
+    def export_warnings(self, warnings_list: list):
+        filepath = os.path.join(self.vault_path, "rules", "warnings.md")
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write("# Docstring & Quality Invariants Warnings\n\n")
+            if not warnings_list:
+                f.write("✅ No docstring or quality warning violations detected.\n")
+                return
+            
+            f.write("The following functions or methods violate quality invariants (missing or malformed docstrings):\n\n")
+            f.write("| Symbol | File | Issue |\n")
+            f.write("| :--- | :--- | :--- |\n")
+            for w in warnings_list:
+                issues_str = ", ".join(w.get("warnings", []))
+                f.write(f"| `[[{w.get('name')}]]` | `{w.get('file')}` | {issues_str} |\n")
