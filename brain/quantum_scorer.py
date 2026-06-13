@@ -241,7 +241,7 @@ class QuantumScorer:
             fi.potential_energy = self.potential_energy(fi, functions)
 
         energies = [abs(f.potential_energy) for f in functions]
-        max_energy = max(energies) if energies else 1.0
+        max_energy = max(energies) if energies and max(energies) > 0 else 1.0
 
         for fi in functions:
             # Sigmoid normalisation

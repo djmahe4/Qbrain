@@ -1,6 +1,7 @@
 import os
 from contextlib import contextmanager
 import yaml
+import time
 
 class LibrarianEngine:
     def __init__(self, repo_path: str, vault_path: str):
@@ -29,20 +30,62 @@ class LibrarianEngine:
                 f.write("# Baseline Snapshot\n\nThis is the initial snapshot of the repository state.")
 
     @contextmanager
-    def lock(self):
-        if os.path.exists(self.lock_file):
+    def lock(self, timeout: int = 30, retry_interval: float = 0.5):
+        """
+        Context manager for acquiring a process-level lock.
+        Waits up to 'timeout' seconds.
+        """
+        start_time = time.time()
+        acquired = False
+        busy = True
+        while time.time() - start_time < timeout:
+            if os.path.exists(self.lock_file):
+                try:
+                    with open(self.lock_file, "r") as f:
+                        pid_str = f.read().strip()
+                        if pid_str:
+                            pid = int(pid_str)
+                            if not self._is_pid_running(pid):
+                                busy = False
+                                break
+                        else:
+                            busy = False
+                            break
+                except (ValueError, OSError):
+                    busy = False
+                    break
+                
+                time.sleep(retry_interval)
+            else:
+                busy = False
+                break
+
+        if busy:
+             raise RuntimeError(f"Database/repository is locked by a running process on {self.lock_file} (timeout after {timeout} seconds).")
+
+        try:
+            # Use 'x' for atomicity if possible
+            with open(self.lock_file, "x") as f:
+                f.write(str(os.getpid()))
+            acquired = True
+        except FileExistsError:
+            # Check if stale again (race condition)
             try:
                 with open(self.lock_file, "r") as f:
                     pid = int(f.read().strip())
-                # Check if pid is running
-                if self._is_pid_running(pid):
-                    raise RuntimeError(f"Database/repository is locked by process {pid}")
+                if not self._is_pid_running(pid):
+                    with open(self.lock_file, "w") as f:
+                        f.write(str(os.getpid()))
+                    acquired = True
             except (ValueError, OSError):
                 pass
+        except OSError as e:
+             raise RuntimeError(f"Failed to create lock file {self.lock_file}: {e}")
 
-        # Acquire lock
-        with open(self.lock_file, "w") as f:
-            f.write(str(os.getpid()))
+        if not acquired:
+             raise RuntimeError(f"Could not acquire lock on {self.lock_file} within {timeout} seconds (race condition).")
+
+
 
         try:
             yield

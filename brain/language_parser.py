@@ -329,6 +329,20 @@ class LanguageParser:
                 for call, alt in blocking_calls.items():
                     if call in code_no_comments:
                         warnings.append(f"Async safety: blocking call '{call}' detected in async function. Use {alt} instead.")
+
+            # 12. Memory safety: unbounded collections in loops
+            # Heuristic: looking for while/for loops that append to something without a size check/clear
+            if re.search(r'\b(while|for)\b.*?\n(\s+).*?\.(append|add|update|extend)\(', code_no_comments, re.DOTALL):
+                if 'len(' not in code_no_comments and 'clear()' not in code_no_comments and 'pop(' not in code_no_comments:
+                    warnings.append("Memory safety: potential unbounded collection growth in loop (no len check or clear)")
+
+            # 13. Concurrency safety: global state
+            if re.search(r'\bglobal\s+\w+', code_no_comments):
+                warnings.append("Concurrency risk: use of 'global' keyword detected; ensure thread-safety with locks")
+
+            # 14. LRU Cache without maxsize
+            if '@lru_cache' in code_no_comments and 'maxsize=' not in code_no_comments:
+                warnings.append("Memory safety: @lru_cache used without explicit maxsize (defaults to 128, but explicit is better)")
         # 1. Naming Pattern (Verb-Noun)
         verbs = {"get", "set", "calculate", "validate", "fetch", "parse", "process", 
                  "run", "check", "update", "delete", "create", "load", "save", 
