@@ -13,6 +13,11 @@ from brain.commands import monitor as monitor_cmd
 from brain.commands import query as query_cmd
 from brain.commands import library as library_cmd
 from brain.commands import audit as audit_cmd
+from brain.evidence_store import EvidenceStore
+from brain.cem_engine import CEMEngine
+from brain.san_engine import SANEngine
+from brain.cognitive_layer import CognitiveLayer
+from brain.narrative_api import NarrativeAPI
 
 
 app = typer.Typer(
@@ -29,6 +34,15 @@ def get_engine():
     embedder = Embedder(config.embedder_model)
     scorer = QuantumScorer(config, indexer)
     return config, indexer, embedder, scorer
+
+def get_cognitive_engine():
+    config, indexer, embedder, scorer = get_engine()
+    store = EvidenceStore(".qbrain-evidence.jsonl")
+    cem = CEMEngine()
+    san = SANEngine()
+    cognitive = CognitiveLayer()
+    api = NarrativeAPI(store, cem, san, cognitive)
+    return config, indexer, embedder, scorer, store, cem, san, cognitive, api
 
 @app.command()
 def index(path: Optional[str] = typer.Argument(None, help="Path to index")):
@@ -110,6 +124,23 @@ def audit():
     """Scan the codebase memory graph for potential business logic vulnerabilities."""
     config, indexer, _, _ = get_engine()
     audit_cmd.audit_vulnerabilities(config, indexer, console)
+
+@app.command()
+def brain(symbol: str = typer.Argument(..., help="Symbol name to query the cognitive model for")):
+    """Query the qbrain cognitive model for a specific symbol's intent and causal impact."""
+    _, _, _, _, _, _, _, _, api = get_cognitive_engine()
+    summary = api.generate_prose_summary(symbol)
+    console.print(f"[bold cyan]qbrain Narrative API Output:[/bold cyan]")
+    console.print(summary)
+
+@app.command()
+def sleep():
+    """Run the cognitive sleep cycle for expensive background consolidation."""
+    _, _, _, _, store, cem, san, cognitive, _ = get_cognitive_engine()
+    console.print("[yellow]Starting cognitive sleep cycle...[/yellow]")
+    res = cognitive.run_sleep_cycle(store, cem, san)
+    console.print(f"[green]Sleep cycle complete.[/green]")
+    console.print(res)
 
 
 library_app = typer.Typer(help="Obsidian Vault Exporter & Learning Librarian CLI")
