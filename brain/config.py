@@ -19,13 +19,42 @@ DEFAULT_CONFIG = {
     "branch_diff": {
         "semantic_drift_threshold": 0.25,
         "lru_branch_pairs_maxsize": 32
+    },
+    "rules": {
+        "history": {
+            "keep_threshold": 10,
+            "weights": {
+                "symbol_change": 3,
+                "behavior_change": 5,
+                "security_change": 10,
+                "error_change": 6
+            },
+            "ignore": ["*.md", "package-lock.json"]
+        }
     }
 }
+
 
 class Config:
     def __init__(self, config_path: str = ".quantum-brain.json"):
         self.config_path = config_path
         self.data = self.load_config()
+        self._load_rules_config()
+
+    def _load_rules_config(self):
+        repo = self.repo_path
+        rules_path = os.path.join(repo, ".qbrain-rules.yaml")
+        if os.path.exists(rules_path):
+            try:
+                import yaml
+                with open(rules_path, "r", encoding="utf-8") as f:
+                    user_rules = yaml.safe_load(f)
+                if user_rules and isinstance(user_rules, dict):
+                    self.data["rules"] = self._merge_dicts(self.data.get("rules", {}), user_rules)
+            except Exception as e:
+                import sys
+                print(f"Warning: Failed to parse rules file '{rules_path}': {e}", file=sys.stderr)
+
 
     def load_config(self) -> Dict[str, Any]:
         path = Path(self.config_path)

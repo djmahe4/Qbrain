@@ -2,6 +2,7 @@ import os
 import json
 import time
 import shutil
+import fnmatch
 from typing import Dict, Any, Optional
 from apscheduler.schedulers.blocking import BlockingScheduler
 from brain.config import Config
@@ -19,6 +20,40 @@ class GitWatcher:
         self.embedder = embedder
         self.state_file = os.path.join(config.repo_path, ".quantum-brain-state.json")
         self.scheduler = BlockingScheduler()
+
+    def calculate_relevance_score(self, diff_data: Dict[str, Any]) -> int:
+        rules = self.config.data.get("rules", {}).get("history", {})
+        ignore_patterns = rules.get("ignore", [])
+        files = diff_data.get("files", [])
+
+        # Filter out files that match ignore patterns
+        non_ignored_files = []
+        for f in files:
+            ignored = False
+            for pat in ignore_patterns:
+                if fnmatch.fnmatch(f, pat) or fnmatch.fnmatch(os.path.basename(f), pat):
+                    ignored = True
+                    break
+            if not ignored:
+                non_ignored_files.append(f)
+
+        if not non_ignored_files:
+            return 0
+
+        weights = rules.get("weights", {})
+        score = 0
+
+        if diff_data.get("has_security"):
+            score += weights.get("security_change", 0)
+        if diff_data.get("has_error"):
+            score += weights.get("error_change", 0)
+        if diff_data.get("has_behavior") or diff_data.get("behavior_change"):
+            score += weights.get("behavior_change", 0)
+        
+        modified_symbols = diff_data.get("modified_symbols", [])
+        score += len(modified_symbols) * weights.get("symbol_change", 0)
+
+        return score
 
     def get_last_processed_commit(self) -> str:
         if os.path.exists(self.state_file):

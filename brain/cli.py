@@ -3,6 +3,8 @@ from rich.console import Console
 from rich.table import Table
 import numpy as np
 import random
+import os
+import yaml
 from typing import Optional
 
 from brain.config import Config
@@ -15,6 +17,7 @@ from brain.branch_diff import BranchDiff
 from brain.dependency_mapper import DependencyMapper
 from brain.business_logic_mapper import BusinessLogicMapper
 from brain.language_parser import LanguageParser
+from brain.librarian import LibrarianEngine
 
 app = typer.Typer(help="Quantum Brain (qbrain) — Codebase Semantic Gravity Engine")
 console = Console()
@@ -33,6 +36,33 @@ def index(path: Optional[str] = typer.Argument(None, help="Path to index")):
     target = path or config.repo_path
     console.print(f"Indexing repository at: [cyan]{target}[/cyan]")
     try:
+        git_dir = os.path.join(target, ".git")
+        if not os.path.exists(git_dir):
+            console.print(f"[yellow]Git repository not found at {target}. Initializing...[/yellow]")
+            import shutil
+            import subprocess
+            git_bin = shutil.which("git") or "git"
+            subprocess.run([git_bin, "init"], cwd=target, check=True)
+            console.print("[green]Initialized empty Git repository.[/green]")
+
+            rules_file = os.path.join(target, ".qbrain-rules.yaml")
+            if not os.path.exists(rules_file):
+                default_rules = {
+                    "history": {
+                        "keep_threshold": 10,
+                        "weights": {
+                            "symbol_change": 3,
+                            "behavior_change": 5,
+                            "security_change": 10,
+                            "error_change": 6
+                        },
+                        "ignore": ["*.md", "package-lock.json"]
+                    }
+                }
+                with open(rules_file, "w", encoding="utf-8") as f:
+                    yaml.dump(default_rules, f, default_flow_style=False)
+                console.print(f"[green]Created default configuration template at {rules_file}[/green]")
+
         res = indexer.index_repository(target)
         console.print("[green]Indexing triggered successfully![/green]")
         console.print(res)
@@ -381,6 +411,97 @@ def entrypoints():
         console.print(table)
     except Exception as e:
         console.print(f"[red]Error finding entrypoints:[/red] {e}")
+
+
+@app.command()
+def projects():
+    """List all indexed projects and check if their vault folders are initialized."""
+    config, indexer, _, _ = get_engine()
+    console.print("Querying projects from codebase-memory-mcp...")
+    try:
+        res = indexer.list_projects()
+        projects_list = res if isinstance(res, list) else res.get("projects", [])
+        
+        table = Table(title="Centralized Projects Status")
+        table.add_column("Project Name", style="cyan")
+        table.add_column("Path", style="green")
+        table.add_column("Vault Configured", style="magenta")
+        table.add_column("Vault Path")
+
+        for p in projects_list:
+            if isinstance(p, dict):
+                name = p.get("name", "unknown")
+                path = p.get("path", "")
+            else:
+                name = p
+                path = ""
+            
+            vault_configured = "No"
+            project_vault_path = "N/A"
+            if path:
+                possible_vault = os.path.join(path, "obsidian_vault")
+                project_vault_path = possible_vault
+                if os.path.exists(os.path.join(possible_vault, "symbols")) and os.path.exists(os.path.join(possible_vault, "files")):
+                    vault_configured = "[green]Yes[/green]"
+                else:
+                    vault_configured = "[red]No[/red]"
+            
+            table.add_row(name, path or "N/A", vault_configured, project_vault_path)
+            
+        console.print(table)
+    except Exception as e:
+        console.print(f"[red]Error listing projects:[/red] {e}")
+
+
+library_app = typer.Typer(help="Obsidian Vault Exporter & Learning Librarian CLI")
+app.add_typer(library_app, name="library")
+
+
+@library_app.command("sync")
+def library_sync():
+    """Sync symbols, behaviors, files, changes, rules to Obsidian vault."""
+    config, indexer, _, _ = get_engine()
+    repo_path = config.repo_path
+    vault_path = config.data.get("vault_path", os.path.join(repo_path, "obsidian_vault"))
+    
+    console.print(f"Syncing librarian from repository [cyan]{repo_path}[/cyan] to vault [cyan]{vault_path}[/cyan]...")
+    
+    engine = LibrarianEngine(repo_path, vault_path)
+    
+    try:
+        with engine.lock():
+            engine.setup_vault()
+            
+            # Export symbols
+            console.print("Exporting symbols...")
+            parser = DocstringParser(indexer)
+            funcs = parser.get_functions_with_docstrings()
+            for f in funcs:
+                symbol_data = {
+                    "name": f.get("name"),
+                    "language": f.get("language") or "generic",
+                    "file": f.get("file"),
+                    "signature": f.get("signature") or f.get("name"),
+                    "docstring": f.get("docstring"),
+                    "params": f.get("params", []),
+                    "returns": f.get("returns", {}),
+                    "business_rules": f.get("business_rules", [])
+                }
+                engine.export_symbol(symbol_data)
+                
+            # Export behaviors
+            console.print("Exporting behavior models...")
+            try:
+                behaviors_res = indexer.query_graph("MATCH (b:Behavior) RETURN b")
+                behaviors_list = behaviors_res if isinstance(behaviors_res, list) else behaviors_res.get("results", [])
+                for b in behaviors_list:
+                    engine.export_behavior(b)
+            except Exception as e:
+                console.print(f"[yellow]Warning: could not load behaviors from graph: {e}[/yellow]")
+
+            console.print("[green]Obsidian Vault synchronized successfully![/green]")
+    except Exception as e:
+        console.print(f"[red]Error during librarian sync:[/red] {e}")
 
 
 if __name__ == "__main__":

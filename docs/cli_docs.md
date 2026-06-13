@@ -19,4 +19,6 @@ Fronted by `typer` and formatted using `rich`.
 - **`qbrain deps`**: Queries and displays the dependency map (external imports, internal imports, and API calls) from the codebase-memory-mcp graph.
 - **`qbrain rules [--top N]`**: Extracts and displays business logic rules categorized by type from function docstrings.
 - **`qbrain entrypoints`**: Locates and lists main codebase entrypoints by parsing configurations (package.json, Cargo.toml, pyproject.toml, YAML) or falling back to a source file scan.
+- **`qbrain projects`**: Lists all indexed projects in the centralized registry and checks whether their local Obsidian vault directories are initialized and configured.
+- **`qbrain library sync`**: Synchronizes the codebase memory graph symbols and behavioral flow models directly to the local Obsidian vault, using PID-based lock protection to avoid background collisions.
 
