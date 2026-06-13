@@ -14,4 +14,6 @@ Handles listing and embedding comparison between branch heads:
 A background job runner designed to run continually and monitor file alterations:
 - **Change Detection**: Leverages `detect_changes` on the memory graph.
 - **Re-Scoring Pipeline**: Once changes are captured, it fetches all codebase symbols, extracts genomes, runs the N-body simulation, and uploads results back to `codebase-memory-mcp`.
-- **Commit Checkpoint**: Persists last processed hash in `.quantum-brain-state.json`.
+- **Commit Checkpoint**: Persists last processed hash and check timestamp in `.quantum-brain-state.json`.
+- **Logging**: Uses `loguru` to report scan status and simulation updates.
+

@@ -2,15 +2,15 @@
 
 This document describes the core intelligence modules implemented in Phase 2 of the **Quantum Brain** (`quant-blm`).
 
-## 1. codebase-memory-mcp Wrapper (`brain/indexer.py`)
-
 The indexer wraps shell calls to the `codebase-memory-mcp` CLI tool. It handles running tools on the knowledge graph using standard JSON payloads.
 
 - **Class**: `Indexer`
 - **Responsibilities**:
   - Encapsulating raw CLI subprocess executions.
+  - **Security**: Validates binary names against an allowlist (`codebase-memory-mcp`, `cbm-cli`, `qbrain-helper`) to prevent unauthorized command execution.
   - Parsing execution outputs from tools: `index_repository`, `detect_changes`, and `query_graph`.
   - Providing custom Cypher query execution helper.
+
 
 ## 2. Docstring & Genome Parser (`brain/docstring_parser.py`)
 
@@ -33,16 +33,17 @@ Caches code symbol embeddings, tracks cache evictions, and calculates semantic d
 
 ## 4. Multi-Language Docstring Parser (`brain/language_parser.py`)
 
-Parses structured parameter, return type, and business rule genome elements from language-specific comment formats.
+A modular parser system that extracts structured parameter, return type, and business rule genome elements from language-specific comment formats.
 
-- **Class/Functions**: `LanguageParser`, `detect_language()`, `extract_params()`, `extract_returns()`, `extract_business_rules()`, `build_genome()`
+- **Architecture**: The `LanguageParser` delegates to language-specific modules in `brain/parsers/`.
 - **Supported Languages**:
-  - **Python**: Parses Google-style `Args:` and `Returns:` blocks using a custom section state machine.
-  - **JS/TS (JSDoc)**: Extracts `@param` and `@returns` metadata.
-  - **Solidity (NatSpec)**: Extracts `@param`, `@return`, `@notice`, and `@dev` rules.
-  - **Go**: Extracts multi-line `//` block comments.
-  - **Rust**: Extracts `# Arguments` and `# Returns` sections from markdown `///` blocks.
-  - **C/C++ (Doxygen)**: Extracts `@param`/`\param`, `@return`/`\return`, and `@brief`/`\brief` annotations.
+  - **Python** (`python.py`): Parses Google-style `Args:` and `Returns:` blocks.
+  - **JS/TS** (`javascript.py`): Extracts JSDoc `@param` and `@returns` metadata.
+  - **Solidity** (`solidity.py`): Extracts NatSpec `@param`, `@return`, `@notice`, and `@dev` rules.
+  - **Go** (`go.py`): Extracts multi-line `//` block comments.
+  - **Rust** (`rust.py`): Extracts `# Arguments` and `# Returns` from markdown `///` blocks.
+  - **C/C++** (`cpp.py`): Extracts Doxygen annotations and `@brief` tags.
+
 
 ## 5. Dependency Mapper (`brain/dependency_mapper.py`)
 
@@ -65,10 +66,12 @@ Scans function docstring genomes to classify code operations into distinct busin
 
 ## 7. Entrypoint Finder (`brain/entrypoint_finder.py`)
 
-Detects the main logical execution entrypoints of the codebase using configuration parser heuristics and filename fallbacks.
+Detects the main logical execution entrypoints of the codebase using configuration parser heuristics and content-based script detection.
 
 - **Class**: `EntrypointFinder`
 - **Responsibilities**:
   - Parsing configuration files including `package.json`, `Cargo.toml`, `pyproject.toml`, and YAML settings.
-  - Falling back to scanning files (e.g. `main.cpp`, `index.ts`, `app.py`, `main.go`) to discover project entrypoints in large repositories.
+  - **Heuristics**: Scans non-standard files for internal entrypoint logic (e.g., `require` calls in PHP, `__main__` guards in Python, `http.createServer` in JS).
+  - Falling back to scanning standard filenames (`main.cpp`, `index.ts`, `app.py`, `main.go`) deep within the directory tree.
+
 

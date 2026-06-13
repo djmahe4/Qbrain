@@ -2,21 +2,31 @@
 
 This document describes the testing structure and verification results implemented in Phase 6 of the **Quantum Brain** (`quant-blm`).
 
-## 1. Unit Test Coverage
+## 1. Unit & Integration Test Coverage
 
-We have implemented four focused tests covering the logical core elements:
-- **`tests/test_docstring_parser.py`**: Validates the concatenation of `name`, `signature`, and `docstring` parameters to confirm the docstring genome matches formatting specifications.
-- **`tests/test_lru_tracker.py`**: Tests basic insertion, lookup, eviction order validation, and historical eviction memory capture.
-- **`tests/test_quantum_scorer.py`**:
-  - Validates correct application of custom `mass = 1.0 + complexity*0.3 + sideEffects*0.5 + export*2.0` calculations.
-  - Tests mathematical properties of gravity attraction ($F = G \frac{m_i m_j}{d_{ij}^2}$), anti-singularity repulsion force, and potential energy calculation models.
+We have implemented a comprehensive test suite covering core logic, security, and integration:
+
+- **Core Parsers**: `tests/test_language_parser.py` validates multi-language docstring extraction.
+- **Security Hardening**: 
+    - `tests/test_indexer_security.py`: Verifies binary name allowlisting.
+    - `tests/test_librarian_security.py`: Tests path sanitization and traversal prevention.
+    - `tests/test_librarian_lock.py`: Verifies multi-process locking and retry logic.
+- **Robustness & Vibe Auditing**:
+    - `tests/test_vibe_auditor_integration.py`: Validates security, robustness, and performance semantic checks.
+    - `tests/test_async_safety.py`: Detects blocking calls in `async def` blocks.
+    - `tests/test_obfuscation_and_entrypoints.py`: Verifies resilience against anti-AI tokens and hidden scripts.
+- **Performance & Stress**:
+    - `tests/test_simulation_stress.py`: Benchmarks Barnes-Hut simulation with 1000+ nodes.
+- **System Integration**:
+    - `tests/test_pipeline_integration.py`: Mocks and verifies the full `index` -> `watch` -> `sync` circuit.
 
 ## 2. Test Execution & Status
 
-Tests are executed using `pytest` inside the local `.venv` environment:
+Tests are executed using `uv` to ensure a consistent environment:
 
 ```bash
-.venv\Scripts\python -m pytest
+uv run pytest -v
 ```
 
-All 4 test cases pass successfully.
+All 154 test cases are passing successfully as of 2026-06-13.
+

@@ -276,9 +276,13 @@ class LanguageParser:
 
 
             # --- Vibe Auditor Semantic Checks ---
-            # 1. Security critical functions
-            if re.search(r'\b(eval|exec|os\.system|subprocess\.(?:run|call|Popen))\s*\(', code_no_comments):
+            # 1. Security critical functions (calls and aliasing)
+            risky_symbols = r'(eval|exec|os\.system|subprocess\.(?:run|call|Popen))'
+            if re.search(fr'\b{risky_symbols}\s*\(', code_no_comments):
                 warnings.append("Security critical: use of eval(), exec(), os.system(), or subprocess is risky")
+            
+            if re.search(fr'\b\w+\s*=\s*{risky_symbols}\b', code_no_comments):
+                warnings.append("Security critical: aliasing risky functions (eval/exec/system) is a common obfuscation tactic")
 
             # 2. Hardcoded credentials
             if re.search(r'\b(password|secret|api_key|token|credential|auth_key)\b\s*[:=]\s*["\'][^"\']{3,}["\']', code_no_comments, re.IGNORECASE):

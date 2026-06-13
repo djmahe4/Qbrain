@@ -24,17 +24,29 @@ obsidian_vault/
 
 ## 2. Concurrency Locking (.qbrain.lock)
 
-To prevent multiple background processes, daemons, or CLI invocations from modifying or corrupting the vault simultaneously, the librarian uses a PID-based locking mechanism:
+To prevent multiple processes from corrupting the vault, the librarian uses a robust, retry-aware locking mechanism:
 
-1. **Acquire**: Writes a `.qbrain.lock` file to the repository root containing the current process's PID.
-2. **Collision Check**: If the file exists, it reads the PID and verifies if the process is active using system calls (`psutil` or `tasklist` fallbacks). If running, it raises a `RuntimeError` preventing concurrent access.
-3. **Release**: Safely removes `.qbrain.lock` upon block completion or when an exception occurs.
+1. **Acquire**: Attempts to write a `.qbrain.lock` file containing the current PID.
+2. **Atomic Creation**: Uses `'x'` mode to prevent race conditions during file creation.
+3. **Retry Logic**: If the lock is held, it waits and retries for up to 30 seconds before timing out.
+4. **Stale Lock Cleanup**: Automatically identifies and clears stale locks if the recorded PID is no longer active on the system.
+5. **Release**: Ensures the lock is removed even if the process crashes or an exception is raised.
 
 ---
 
-## 3. Behavior Flow Dual-Representation
+## 3. Path Sanitization & Security
+
+The Librarian implements a strict security boundary for vault exports:
+
+- **Traversal Prevention**: Every file write is validated against the base `vault_path` using `os.path.abspath`. 
+- **Blocked Writes**: Any attempt to write outside the configured vault directory (e.g., using `../../` in a symbol name) triggers a `ValueError` and halts the sync.
+
+---
+
+## 4. Behavior Flow Dual-Representation
 
 Behaviors are written to the vault using a hybrid markdown format designed for both human visualization and machine-parsing:
+
 
 - **Human Visualization**: Mermaid class/state diagrams (`stateDiagram-v2`) showing states, flows, and execution path conditions.
 - **Machine/LLM Representation**: Structured YAML Frontmatter metadata containing states lists, endpoints, triggers, and signatures.
@@ -64,7 +76,7 @@ stateDiagram-v2
 
 ---
 
-## 4. Greenfield Initialization Fallback
+## 5. Greenfield Initialization Fallback
 
 If `quant-blm` is initialized or indexed in a workspace directory where `.git` is missing:
 
@@ -78,33 +90,39 @@ If `quant-blm` is initialized or indexed in a workspace directory where `.git` i
 
 ---
 
-## 5. Docstring & Quality Invariants Warnings
+## 6. Docstring & Quality Invariants Warnings
 
 During `qbrain library sync`, the system evaluates the structural completeness of each symbol's documentation:
 - **Missing Docstrings**: Triggers a warning if a function or method has an empty or missing comment block.
 - **Malformed Docstrings**: Compares signature parameters against documented `@param` parameters. For languages like Python, JS/TS, C++, Go, Rust, and Solidity, a warning is raised if parameters declared in the signature are completely undocumented.
 - **Reporting**: Discovered violations are compiled and saved to `rules/warnings.md` in the Obsidian vault, using standard Markdown tables with internal linkages.
 
-### Coding Standards Enforcement (cc-skill-coding-standards)
+### Coding Standards & Vibe Auditing
 
-The Librarian runs a static analysis suite checking function code snippets for the following violations:
-1. **Naming Patterns**:
-   - Functions must start with action verbs (e.g. `get`, `set`, `validate`, `fetch`).
-   - Short/vague variable names (e.g., single/two-character variables) trigger warnings unless used as standard loop indices.
-2. **File Naming & Project Structure**:
-   - Files in `components/` must be `PascalCase` (e.g. `Button.tsx`).
-   - Files in `hooks/` must be `camelCase` starting with `use` (e.g. `useAuth.ts`).
-3. **State Management**:
-   - Warnings are raised if state updates inside React components directly reference the state variable (e.g. `setCount(count + 1)`) instead of using functional updates (`setCount(prev => prev + 1)`).
-4. **Type Safety**:
-   - Identifies usages of `: any` or `as any` type bypass annotations.
-5. **API Conventions & Response Formats**:
-   - Checks if routes under the `api/` directory contain actions/verbs in their filename paths.
-   - Verifies JSON responses returned by API endpoint files contain a `"success"` Boolean key.
-6. **Error Handling**:
-   - Identifies empty `catch` blocks (silent failure warnings).
-   - Warns on file-system or network operations (`fetch`, `open`) that are not wrapped inside try/except/catch blocks.
-7. **Performance & Code Smells**:
-   - Warns on SQL queries selecting all columns (e.g. `select('*')` or `SELECT *`).
-   - Warns if a function's signature defines 5 or more parameters.
-   - Identifies sequential awaits of independent calls, recommending `Promise.all` parallelization.
+The Librarian runs an exhaustive semantic analysis suite on function code snippets:
+
+1. **Security (Vibe Auditor)**:
+   - **Dangerous Functions**: Detects usage of `eval()`, `exec()`, `os.system()`, or `subprocess`.
+   - **Credentials**: Identifies hardcoded passwords, tokens, or API keys in string literals.
+   - **Deserialization**: Flags unsafe `pickle` or `yaml.load` calls without safe loaders.
+   - **Path Traversal**: Warns on unvalidated string concatenation in `open()` calls.
+   - **Permissions**: Detects insecure file permission settings (e.g., `chmod 777`).
+   - **Obfuscation**: Identifies variable aliasing of risky functions (e.g., `h = os.system`).
+
+2. **Robustness & Async Safety**:
+   - **HTTP Timeouts**: Warns if `requests` calls are missing an explicit `timeout`.
+   - **Async Performance**: Flags synchronous blocking calls (like `time.sleep` or `requests.get`) inside `async def` functions.
+   - **Unbounded Loops**: Identifies `while True` blocks without clear exit conditions.
+   - **Silent Failures**: Flags empty `catch` blocks or Python `except: pass` patterns.
+
+3. **Memory & Concurrency**:
+   - **Collection Growth**: Heuristically identifies collections (lists, sets) that append inside loops without size checks or clearing.
+   - **Cache Hygiene**: Warns on `@lru_cache` usage without an explicit `maxsize`.
+   - **Global State**: Flags usage of the `global` keyword in concurrent contexts.
+
+4. **Frontend & API Patterns**:
+   - **Naming**: Enforces `PascalCase` for React components and `useCamelCase` for hooks.
+   - **React State**: Recommends functional updates (`setVal(v => v + 1)`) over direct value assignment.
+   - **API Schema**: Checks for Zod/Yup/Joi validation schemas when receiving requests.
+   - **JSON Format**: Ensures API responses include a mandatory `success` boolean field.
+

@@ -4,9 +4,24 @@ This document describes the CLI user interface implemented in Phase 5 of the **Q
 
 ## 1. CLI Entry Point (`brain/cli.py`)
 
-Fronted by `typer` and formatted using `rich`.
+The CLI is managed using `uv` and implemented with `typer`.
+
+### Execution
+To run any command:
+```bash
+uv run qbrain <command> [args]
+```
+
+### Command Structure
+The CLI logic is modularized into `brain/commands/` for better maintainability:
+- `index.py`: Repository indexing.
+- `monitor.py`: Watcher and scoring.
+- `query.py`: Search and diff.
+- `library.py`: Obsidian sync.
 
 ### Available Commands
+
+
 
 - **`qbrain index [path]`**: Runs manual project code parsing.
 - **`qbrain watch [--interval X]`**: Runs the in-process cron monitor checking git diffs every `X` minutes.

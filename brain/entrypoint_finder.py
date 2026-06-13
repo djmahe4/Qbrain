@@ -159,18 +159,40 @@ class EntrypointFinder:
             "index.js", "index.ts", "app.py", "main.py","index.php",
             "server.js", "server.ts", "index.jsx", "index.tsx"
         ]
+
+        # Heuristic markers for entrypoints in non-standard files
+        CONTENT_MARKERS = {
+            ".php": [re.compile(r"<\?php.*?(?:require|include)(?:_once)?\s*['\"]", re.DOTALL | re.IGNORECASE)],
+            ".py": [re.compile(r"if\s+__name__\s*==\s*['\"]__main__['\"]")],
+            ".js": [re.compile(r"app\.listen\s*\("), re.compile(r"http\.createServer\s*\(")],
+        }
         
         if os.path.exists(self.repo_path) and os.path.isdir(self.repo_path):
             for root, dirs, files in os.walk(self.repo_path):
                 # Prune common search dirs
                 dirs[:] = [d for d in dirs if d not in ("node_modules", ".git", ".venv", "venv", "__pycache__", "build", "dist")]
                 for f in files:
-                    if f in FALLBACK_NAMES:
+                    is_entry = f in FALLBACK_NAMES
+                    
+                    if not is_entry:
+                        # Check content heuristic
+                        _, ext = os.path.splitext(f)
+                        if ext in CONTENT_MARKERS:
+                            try:
+                                with open(os.path.join(root, f), "r", encoding="utf-8", errors="ignore") as content_f:
+                                    # Read first 2KB for efficiency
+                                    head = content_f.read(2048)
+                                    if any(marker.search(head) for marker in CONTENT_MARKERS[ext]):
+                                        is_entry = True
+                            except Exception:
+                                pass
+
+                    if is_entry:
                         rel_path = os.path.relpath(os.path.join(root, f), self.repo_path)
                         rel_path = rel_path.replace("\\", "/")
                         if rel_path not in [e["file"] for e in entrypoints]:
                             entrypoints.append({
-                                "type": "fallback",
+                                "type": "heuristic" if f not in FALLBACK_NAMES else "fallback",
                                 "file": rel_path,
                                 "name": f.split(".")[0]
                             })

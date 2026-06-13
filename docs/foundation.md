@@ -2,9 +2,8 @@
 
 This document describes the foundation modules implemented in Phase 1 of the **Quantum Brain** (`quant-blm`).
 
-## Architecture & Configuration
+The foundation relies on a central configuration module (`brain/config.py`) which reads `.quantum-brain.json` from the repository root. The project is managed using `uv` and follows PEP 621 standards.
 
-The foundation relies on a central configuration module (`brain/config.py`) which reads `.quantum-brain.json` from the repository root.
 
 ### Default Configuration Structure
 
@@ -44,10 +43,20 @@ The loader resolves the configuration file by searching current directory and it
   - `business_collapse_threshold`: Threshold for collapsing superposition to business state.
 
 ---
+---
+
+## Observability & Logging (`brain/logger.py`)
+
+Quantum Brain uses `loguru` for structured logging. It supports both human-readable console output and machine-parsable JSON formatting for production environments.
+
+- **Functions**: `get_logger()`, `configure_logging()`
+- **Features**: Automatic module/line tracking, exception capturing, and environment-based level setting.
+
+---
 
 ## Semantic Embeddings (`brain/embedder.py`)
 
-Semantic matching and distance computations are powered by sentence-transformers using local resources (no external cloud requests).
+Semantic matching and distance computations are powered by `sentence-transformers` using local resources.
 
 - **Class**: `Embedder`
 - **Model**: `all-MiniLM-L6-v2` (default, generates 384-dimensional dense vectors)
@@ -55,3 +64,16 @@ Semantic matching and distance computations are powered by sentence-transformers
   - `embed(texts)`: Encodes single strings or lists of strings.
   - `cosine_similarity(v1, v2)`: Returns cosine similarity between two numpy vectors.
   - `semantic_distance(v1, v2)`: Returns `1.0 - cosine_similarity`.
+
+---
+
+## Environment Management (`uv`)
+
+The project uses `uv` for fast dependency resolution and execution.
+
+- **Sync**: `uv sync`
+- **Run**: `uv run qbrain <command>`
+- **Develop**: `uv add --dev pytest`
+
+Dependencies are defined in `pyproject.toml` using standard PEP 621 fields.
+

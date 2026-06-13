@@ -26,6 +26,8 @@ For scaling simulations where functional count `N > 500`, the physics engine swi
 - Divides 2D coordinate spaces into quadtree zones.
 - Approximates distant forces by grouping sub-trees into single mass points.
 - Reduces time complexity from $O(N^2)$ to $O(N \log N)$.
+- **Stability**: Includes safeguards against `ZeroDivisionError` during normalization for small or singular graphs.
+
 
 ## 3. Graph Synchronization (`SEMANTIC_GRAVITY`)
 
