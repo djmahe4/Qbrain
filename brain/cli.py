@@ -30,7 +30,7 @@ def get_engine():
 def index(path: Optional[str] = typer.Argument(None, help="Path to index")):
     """Index the repository to populate codebase-memory-mcp graph."""
     config, indexer, _, _ = get_engine()
-    index.index_repo(path, config, indexer, console)
+    indexer.index_repository(path)
 
 @app.command()
 def watch(interval: int = typer.Option(5, "--interval", "-i", help="Watcher check interval in minutes")):
