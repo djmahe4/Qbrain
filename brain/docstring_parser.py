@@ -10,25 +10,33 @@ class DocstringParser:
 
     def get_functions_with_docstrings(self) -> List[Dict[str, Any]]:
         """
-        Query functions and retrieve names, docstrings, filenames, lines, and language.
-        The 'language' field is included so that multi-language genome building works correctly.
+        Query functions and retrieve metadata.
+        Filters out non-code files like READMEs, JSON, etc.
         """
         query = (
             "MATCH (f:Function) "
-            "RETURN f.name AS name, f.docstring AS docstring, f.file AS file, f.line AS line, "
+            "RETURN f.name AS name, f.docstring AS docstring, f.file_path AS file, f.start_line AS line, "
             "f.complexity AS complexity, f.sideEffects AS sideEffects, f.isExported AS isExported, "
             "f.signature AS signature, f.language AS language"
         )
-        try:
-            results = self.indexer.query_graph(query)
-            if isinstance(results, list):
-                return results
-            if isinstance(results, dict):
-                return results.get("results", [])
-            return []
-        except Exception:
-            # Return empty if graph query fails (e.g. no database yet initialized)
-            return []
+        results = self.indexer.query_graph(query)
+        
+        # Post-process to exclude documentation and config files
+        filtered = []
+        excluded_exts = {".md", ".json", ".txt", ".yaml", ".yml", ".lock", ".log"}
+        excluded_names = {"readme", "changelog", "license", "contributors", "authors"}
+        
+        for f in results:
+            path = (f.get("file") or "").lower()
+            name = (f.get("name") or "").lower()
+            
+            is_doc = any(path.endswith(ext) for ext in excluded_exts)
+            is_meta = any(ex_name in path or ex_name in name for ex_name in excluded_names)
+            
+            if not (is_doc or is_meta):
+                filtered.append(f)
+                
+        return filtered
 
     def parse_genome(self, func: Dict[str, Any]) -> Dict[str, Any]:
         """

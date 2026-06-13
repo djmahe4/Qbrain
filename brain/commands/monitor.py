@@ -142,27 +142,68 @@ def calibrate_engine(sample: int, config, indexer, embedder, scorer, console):
 def trace_entanglement(function: str, config, indexer, console):
     """Find and trace semantic gravity links (entanglement) connected to a specific function."""
     console.print(f"Tracing entanglement for: [cyan]{function}[/cyan]...")
-    query = (
-        f"MATCH (f:Function)-[r:SEMANTIC_GRAVITY]-(g:Function) "
-        f"WHERE f.name = '{function}' "
-        f"RETURN g.name AS bound_name, r.force AS force, g.file AS file "
-        f"ORDER BY r.force DESC"
+    
+    parser = DocstringParser(indexer)
+    funcs = parser.get_functions_with_docstrings()
+    
+    target_f = next((f for f in funcs if f.get("name") == function), None)
+    if not target_f:
+        console.print(f"[yellow]Function '{function}' not found in the graph. Run 'qbrain index' first.[/yellow]")
+        return
+
+    from brain.embedder import Embedder
+    from brain.quantum_scorer import FunctionNode, QuantumScorer
+    
+    embedder = Embedder(config.embedder_model)
+    scorer = QuantumScorer(config, indexer)
+    
+    console.print("Embedding symbols and calculating forces...")
+    
+    target_genome = parser.build_genome(target_f)
+    target_emb = embedder.embed(target_genome)
+    target_node = FunctionNode(
+        name=target_f.get("name"),
+        embedding=target_emb,
+        complexity=float(target_f.get("complexity", 1.0) or 1.0),
+        side_effects=float(target_f.get("sideEffects", 0.0) or 0.0),
+        is_exported=bool(target_f.get("isExported", False))
     )
-    try:
-        res = indexer.query_graph(query)
-        records = res if isinstance(res, list) else res.get("results", [])
 
-        if not records:
-            console.print(f"[yellow]No entangled functions found for '{function}'. Try running 'qbrain score' first.[/yellow]")
-            return
+    entangled = []
+    for f in funcs:
+        if f.get("name") == function:
+            continue
+            
+        genome = parser.build_genome(f)
+        emb = embedder.embed(genome)
+        node = FunctionNode(
+            name=f.get("name", "unknown"),
+            embedding=emb,
+            complexity=float(f.get("complexity", 1.0) or 1.0),
+            side_effects=float(f.get("sideEffects", 0.0) or 0.0),
+            is_exported=bool(f.get("isExported", False)),
+            file=f.get("file", "")
+        )
+        
+        dist_sem = Embedder.semantic_distance(target_node.embedding, node.embedding)
+        force = scorer.gravitational_force(target_node, node, dist_sem)
+        
+        if force > 0.5:
+            entangled.append({
+                "name": node.name,
+                "force": force,
+                "file": node.file
+            })
 
-        table = Table(title=f"Entangled Nodes (Bound to {function})")
-        table.add_column("Symbol", style="cyan")
-        table.add_column("Gravity Force (Attraction)", justify="right")
-        table.add_column("Location")
+    if not entangled:
+        console.print(f"[yellow]No entangled functions found for '{function}' with force > 0.5.[/yellow]")
+        return
 
-        for r in records:
-            table.add_row(r.get("bound_name", "unknown"), f"{float(r.get('force', 0.0) or 0.0):.4f}", r.get("file", "N/A"))
-        console.print(table)
-    except Exception as e:
-        console.print(f"[red]Error querying entanglement:[/red] {e}")
+    table = Table(title=f"Entangled Nodes (Bound to {function})")
+    table.add_column("Symbol", style="cyan")
+    table.add_column("Gravity Force (Attraction)", justify="right")
+    table.add_column("Location")
+
+    for r in sorted(entangled, key=lambda x: x["force"], reverse=True):
+        table.add_row(r["name"], f"{r['force']:.4f}", r["file"])
+    console.print(table)

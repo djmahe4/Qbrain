@@ -105,11 +105,28 @@ class Indexer:
         res = self._run_cli("query_graph", {"query": cypher_query, "project": project})
         try:
             data = json.loads(res)
+            # Handle standard {"columns": [], "rows": [[]]} format
             if isinstance(data, dict) and "columns" in data and "rows" in data:
                 cols = data["columns"]
                 rows = data["rows"]
-                return [dict(zip(cols, row)) for row in rows]
-            return data
+                records = []
+                for row in rows:
+                    rec = dict(zip(cols, row))
+                    # Automatically parse JSON-encoded strings in values (like labels lists)
+                    for k, v in rec.items():
+                        if isinstance(v, str) and v.startswith("[") and v.endswith("]"):
+                            try:
+                                rec[k] = json.loads(v)
+                            except:
+                                pass
+                    records.append(rec)
+                return records
+            # Handle {"results": []} format or raw list
+            if isinstance(data, dict):
+                return data.get("results", [])
+            if isinstance(data, list):
+                return data
+            return []
         except json.JSONDecodeError:
             return []
 

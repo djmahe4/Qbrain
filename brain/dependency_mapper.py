@@ -57,80 +57,73 @@ class DependencyMapper:
     and maps them into DependencyNode objects for edge-writing and summarization.
     """
 
-    # Cypher query to retrieve all Import/Require/Call nodes from the graph
-    _IMPORT_QUERY = (
-        "MATCH (d) "
-        "WHERE d:Import OR d:ExternalImport OR d:StdlibImport OR d:RelativeImport "
-        "   OR d:SolidityImport OR d:Require OR d:APICall OR d:HTTPCall "
-        "RETURN d.name AS name, labels(d)[0] AS type, d.file AS file, d.target AS target"
-    )
+    # Structural nodes
+    _STRUCTURAL_LABELS = [
+        "Project", "Package", "Folder", "File", "Module",
+        "Class", "Function", "Method", "Interface", "Enum", 
+        "Type", "Route", "Resource", "Variable", "Field"
+    ]
+
+    # Dependency/Call nodes
+    _DEPENDENCY_LABELS = [
+        "Import", "ExternalImport", "StdlibImport", "RelativeImport", 
+        "SolidityImport", "Require", "APICall", "HTTPCall"
+    ]
+
+    # All labels combined
+    ALL_LABELS = _STRUCTURAL_LABELS + _DEPENDENCY_LABELS
 
     def __init__(self, indexer: Indexer):
         self.indexer = indexer
 
-    def _normalize_results(self, raw) -> List[Dict[str, Any]]:
-        """Handle both list and {results: [...]} dict formats from query_graph."""
-        if isinstance(raw, list):
-            return raw
-        if isinstance(raw, dict):
-            return raw.get("results", [])
-        return []
-
     def get_dependencies(self) -> List[DependencyNode]:
         """
-        Query the MCP graph and return all DependencyNode objects found.
+        Query the MCP graph for dependency nodes and filter in Python.
+        Filters out non-code files like READMEs, JSON, etc.
         """
-        raw = self.indexer.query_graph(self._IMPORT_QUERY)
-        records = self._normalize_results(raw)
-
+        # Use a broad query that is safe for the parser
+        query = "MATCH (d) RETURN d.name AS name, labels(d) AS types, d.file_path AS file, d.target AS target LIMIT 5000"
+        records = self.indexer.query_graph(query)
+        
+        target_labels = set(self._DEPENDENCY_LABELS)
+        excluded_exts = {".md", ".json", ".txt", ".lock", ".log"}
+        excluded_names = {"readme", "changelog", "license", "contributors", "authors"}
+        
         deps: List[DependencyNode] = []
         for rec in records:
-            try:
+            types = rec.get("types") or []
+            path = (rec.get("file") or "").lower()
+            name = (rec.get("name") or "").lower()
+            
+            # Check for excluded files/names
+            is_doc = any(path.endswith(ext) for ext in excluded_exts)
+            is_meta = any(ex_name in path or ex_name in name for ex_name in excluded_names)
+            
+            if is_doc or is_meta:
+                continue
+                
+            # Find first matching label
+            match = next((t for t in types if t in target_labels), None)
+            if match:
+                rec["type"] = match
                 name = rec.get("name") or ""
                 source_file = rec.get("file") or ""
                 target = rec.get("target") or name
+                
                 dep_type = _classify_dep_type(rec)
                 deps.append(DependencyNode(name=name, dep_type=dep_type, source_file=source_file, target=target))
-            except (ValueError, KeyError):
-                # Skip malformed records
-                continue
         return deps
 
     def write_to_graph(self, deps: List[DependencyNode]) -> None:
         """
         Write dependency edges to the MCP graph.
-        - external/internal imports → DEPENDS_ON / IMPORTS edge
-        - api calls → CALLS_API edge
+        NOTE: Disabled because the underlying graph engine CLI is read-only.
         """
         if not deps:
             return
-
-        # Build batch Cypher: merge dependency nodes and create edges
-        merge_statements: List[str] = []
-        edge_statements: List[str] = []
-
-        for i, dep in enumerate(deps):
-            var = f"d{i}"
-            edge_type = "CALLS_API" if dep.dep_type == "api" else "DEPENDS_ON"
-            # Escape single quotes
-            safe_name = dep.name.replace("'", "\\'")
-            safe_file = dep.source_file.replace("'", "\\'")
-            safe_target = dep.target.replace("'", "\\'")
-
-            merge_statements.append(
-                f"MERGE ({var}:Dependency {{name: '{safe_name}', type: '{dep.dep_type}', target: '{safe_target}'}})"
-            )
-            edge_statements.append(
-                f"MERGE (src{i}:File {{path: '{safe_file}'}}) "
-                f"MERGE (src{i})-[:{edge_type}]->({var})"
-            )
-
-        # Execute as two batched calls: one to merge nodes, one for edges
-        node_cypher = " ".join(merge_statements)
-        edge_cypher = " ".join(edge_statements)
-
-        self.indexer.query_graph(node_cypher)
-        self.indexer.query_graph(edge_cypher)
+        from brain.logger import get_logger
+        get_logger(__name__).warning("DependencyMapper.write_to_graph is disabled: Graph engine is read-only.")
+        return
 
     def build_dependency_summary(self, deps: List[DependencyNode]) -> Dict[str, List[DependencyNode]]:
         """
