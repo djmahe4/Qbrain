@@ -177,3 +177,57 @@ def test_query_graph_with_language_field(mock_run):
 
     assert result[0]["language"] == "solidity"
     assert result[1]["language"] == "typescript"
+
+
+# ─────────────────────────── New Indexing & Querying Tools ───────────────────────────
+
+@patch("subprocess.run")
+def test_list_projects(mock_run):
+    payload = {"projects": [{"name": "quant-blm", "nodes": 120, "edges": 450}]}
+    mock_run.return_value = MagicMock(stdout=json.dumps(payload), returncode=0)
+
+    with patch("shutil.which", return_value="/usr/bin/cbm"):
+        indexer = _make_indexer()
+        result = indexer.list_projects()
+
+    assert "projects" in result
+    assert result["projects"][0]["name"] == "quant-blm"
+
+
+@patch("subprocess.run")
+def test_get_architecture(mock_run):
+    payload = {"layers": ["api", "business"], "hotspots": ["main.cpp"]}
+    mock_run.return_value = MagicMock(stdout=json.dumps(payload), returncode=0)
+
+    with patch("shutil.which", return_value="/usr/bin/cbm"):
+        indexer = _make_indexer()
+        result = indexer.get_architecture("quant-blm")
+
+    assert "layers" in result
+    assert "hotspots" in result
+
+
+@patch("subprocess.run")
+def test_trace_call_path(mock_run):
+    payload = {"nodes": [{"name": "main"}], "edges": []}
+    mock_run.return_value = MagicMock(stdout=json.dumps(payload), returncode=0)
+
+    with patch("shutil.which", return_value="/usr/bin/cbm"):
+        indexer = _make_indexer()
+        result = indexer.trace_call_path("main", direction="both", project="quant-blm")
+
+    assert "nodes" in result
+    assert result["nodes"][0]["name"] == "main"
+
+
+@patch("subprocess.run")
+def test_get_code_snippet(mock_run):
+    payload = {"source": "int main() { return 0; }", "file": "main.cpp"}
+    mock_run.return_value = MagicMock(stdout=json.dumps(payload), returncode=0)
+
+    with patch("shutil.which", return_value="/usr/bin/cbm"):
+        indexer = _make_indexer()
+        result = indexer.get_code_snippet("main", project="quant-blm", context_lines=5)
+
+    assert result["source"] == "int main() { return 0; }"
+

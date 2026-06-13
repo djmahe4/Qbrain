@@ -110,3 +110,19 @@ def test_find_entrypoint_empty(tmp_path):
     finder = EntrypointFinder(str(tmp_path))
     entrypoints = finder.find_entrypoints()
     assert entrypoints == []
+
+
+def test_find_entrypoint_malformed_config_logs_warning(tmp_path, caplog):
+    import logging
+    # Setup malformed package.json
+    pkg_file = tmp_path / "package.json"
+    pkg_file.write_text("{invalid json")
+
+    finder = EntrypointFinder(str(tmp_path))
+    with caplog.at_level(logging.WARNING):
+        entrypoints = finder.find_entrypoints()
+
+    # Should fall back gracefully and log a warning
+    assert entrypoints == []
+    assert any("Failed to parse" in record.message for record in caplog.records)
+

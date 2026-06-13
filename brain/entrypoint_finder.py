@@ -54,8 +54,9 @@ class EntrypointFinder:
                             "file": bins,
                             "name": data.get("name", "bin")
                         })
-            except Exception:
-                pass
+            except Exception as err:
+                import logging
+                logging.getLogger("qbrain").warning(f"Failed to parse package.json: {err}")
 
         # 2. Cargo.toml (Rust)
         cargo_path = os.path.join(self.repo_path, "Cargo.toml")
@@ -78,8 +79,9 @@ class EntrypointFinder:
                             "file": data["lib"]["path"],
                             "name": data["lib"].get("name", "lib")
                         })
-            except Exception:
-                pass
+            except Exception as err:
+                import logging
+                logging.getLogger("qbrain").warning(f"Failed to parse Cargo.toml: {err}")
 
         # 3. pyproject.toml (Python)
         pyproj_path = os.path.join(self.repo_path, "pyproject.toml")
@@ -107,8 +109,9 @@ class EntrypointFinder:
                                     "file": target,
                                     "name": name
                                 })
-            except Exception:
-                pass
+            except Exception as err:
+                import logging
+                logging.getLogger("qbrain").warning(f"Failed to parse pyproject.toml: {err}")
 
         # 4. YAML config files
         if os.path.exists(self.repo_path) and os.path.isdir(self.repo_path):
@@ -146,8 +149,9 @@ class EntrypointFinder:
                                     "file": match,
                                     "name": "entrypoint"
                                 })
-                    except Exception:
-                        pass
+                    except Exception as err:
+                        import logging
+                        logging.getLogger("qbrain").warning(f"Failed to parse YAML file {filename}: {err}")
 
         # 5. Fallback scan
         FALLBACK_NAMES = [

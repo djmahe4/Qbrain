@@ -78,3 +78,45 @@ class Indexer:
             return json.loads(res)
         except json.JSONDecodeError:
             return {"raw_result": res}
+
+    def list_projects(self) -> Dict[str, Any]:
+        """List all indexed projects."""
+        res = self._run_cli("list_projects", {})
+        try:
+            return json.loads(res)
+        except json.JSONDecodeError:
+            return {"raw_result": res}
+
+    def get_architecture(self, project: Optional[str] = None) -> Dict[str, Any]:
+        """Retrieve architecture overview."""
+        args = {}
+        if project:
+            args["project"] = project
+        res = self._run_cli("get_architecture", args)
+        try:
+            return json.loads(res)
+        except json.JSONDecodeError:
+            return {"raw_result": res}
+
+    def trace_call_path(self, function_name: str, direction: str = "both", project: Optional[str] = None) -> Dict[str, Any]:
+        """Advanced call path tracing."""
+        args = {"function_name": function_name, "direction": direction}
+        if project:
+            args["project"] = project
+        res = self._run_cli("trace_call_path", args)
+        try:
+            return json.loads(res)
+        except json.JSONDecodeError:
+            return {"raw_result": res}
+
+    def get_code_snippet(self, function_name: str, project: Optional[str] = None, context_lines: int = 3) -> Dict[str, Any]:
+        """Retrieve source code snippet for a function/class."""
+        args = {"function_name": function_name, "context_lines": context_lines}
+        if project:
+            args["project"] = project
+        res = self._run_cli("get_code_snippet", args)
+        try:
+            return json.loads(res)
+        except json.JSONDecodeError:
+            return {"raw_result": res}
+
