@@ -71,7 +71,8 @@ class DependencyMapper:
     ]
 
     # All labels combined
-    ALL_LABELS = _STRUCTURAL_LABELS + _DEPENDENCY_LABELS
+    #ALL_LABELS = _STRUCTURAL_LABELS + _DEPENDENCY_LABELS
+    ALL_LABELS = _DEPENDENCY_LABELS
 
     def __init__(self, indexer: Indexer):
         self.indexer = indexer
@@ -82,17 +83,31 @@ class DependencyMapper:
         Filters out non-code files like READMEs, JSON, etc.
         """
         # Use a broad query that is safe for the parser
-        query = "MATCH (d) RETURN d.name AS name, labels(d) AS types, d.file_path AS file, d.target AS target LIMIT 5000"
-        records = self.indexer.query_graph(query)
+        query = "MATCH (d) RETURN d.name AS name, labels(d) AS types, d.file_path AS file_path, d.file AS file, d.target AS target LIMIT 5000"
+        raw = self.indexer.query_graph(query)
         
+        # Handle dict response format from mocks or Indexer
+        if isinstance(raw, dict) and "results" in raw:
+            records = raw["results"]
+        elif isinstance(raw, dict) and "rows" in raw:
+            # Already normalized by Indexer.query_graph
+            records = raw
+        else:
+            records = raw
+
         target_labels = set(self._DEPENDENCY_LABELS)
-        excluded_exts = {".md", ".json", ".txt", ".lock", ".log"}
+        excluded_exts = {".md", ".json", ".txt", ".yaml", ".yml", ".lock", ".log"}
         excluded_names = {"readme", "changelog", "license", "contributors", "authors"}
         
         deps: List[DependencyNode] = []
         for rec in records:
+            # Normalize labels (plural 'types' from real graph, singular 'type' from mocks)
             types = rec.get("types") or []
-            path = (rec.get("file") or "").lower()
+            if not types and "type" in rec:
+                types = [rec["type"]]
+                
+            # Normalize path (plural 'file_path' from real graph, 'file' from mocks)
+            path = (rec.get("file_path") or rec.get("file") or "").lower()
             name = (rec.get("name") or "").lower()
             
             # Check for excluded files/names
@@ -105,25 +120,57 @@ class DependencyMapper:
             # Find first matching label
             match = next((t for t in types if t in target_labels), None)
             if match:
-                rec["type"] = match
+                rec_for_class = rec.copy()
+                rec_for_class["type"] = match
+                # Ensure classification uses normalized fields
+                rec_for_class["target"] = rec.get("target") or rec.get("name")
+                
                 name = rec.get("name") or ""
-                source_file = rec.get("file") or ""
+                source_file = rec.get("file_path") or rec.get("file") or ""
                 target = rec.get("target") or name
                 
-                dep_type = _classify_dep_type(rec)
+                dep_type = _classify_dep_type(rec_for_class)
                 deps.append(DependencyNode(name=name, dep_type=dep_type, source_file=source_file, target=target))
         return deps
 
     def write_to_graph(self, deps: List[DependencyNode]) -> None:
         """
         Write dependency edges to the MCP graph.
-        NOTE: Disabled because the underlying graph engine CLI is read-only.
+        Optimistic write: fails silently with a warning if the graph is read-only.
         """
         if not deps:
             return
-        from brain.logger import get_logger
-        get_logger(__name__).warning("DependencyMapper.write_to_graph is disabled: Graph engine is read-only.")
-        return
+
+        # Build batch Cypher: merge dependency nodes and create edges
+        merge_statements: List[str] = []
+        edge_statements: List[str] = []
+
+        for i, dep in enumerate(deps):
+            var = f"d{i}"
+            edge_type = "CALLS_API" if dep.dep_type == "api" else "DEPENDS_ON"
+            # Escape single quotes
+            safe_name = dep.name.replace("'", "\\'")
+            safe_file = dep.source_file.replace("'", "\\'")
+            safe_target = dep.target.replace("'", "\\'")
+
+            merge_statements.append(
+                f"MERGE ({var}:Dependency {{name: '{safe_name}', type: '{dep.dep_type}', target: '{safe_target}'}})"
+            )
+            edge_statements.append(
+                f"MERGE (src{i}:File {{path: '{safe_file}'}}) "
+                f"MERGE (src{i})-[:{edge_type}]->({var})"
+            )
+
+        try:
+            # Execute as two batched calls: one to merge nodes, one for edges
+            node_cypher = " ".join(merge_statements)
+            edge_cypher = " ".join(edge_statements)
+
+            self.indexer.query_graph(node_cypher)
+            self.indexer.query_graph(edge_cypher)
+        except Exception as e:
+            from brain.logger import get_logger
+            get_logger(__name__).warning(f"DependencyMapper.write_to_graph failed (likely read-only graph): {e}")
 
     def build_dependency_summary(self, deps: List[DependencyNode]) -> Dict[str, List[DependencyNode]]:
         """

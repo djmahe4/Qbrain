@@ -43,16 +43,17 @@ def _make_indexer(results):
     return indexer
 
 def test_get_dependencies_calls_mcp():
-    """DependencyMapper queries the MCP graph for Import nodes."""
+    """DependencyMapper queries the MCP graph using a broad query."""
     indexer = _make_indexer(MOCK_IMPORT_RESULTS)
     mapper = DependencyMapper(indexer)
     deps = mapper.get_dependencies()
 
     # Must have called query_graph
     indexer.query_graph.assert_called_once()
-    # Query should ask for Import nodes
+    # Query should use the broad MATCH (d) syntax
     query_arg = indexer.query_graph.call_args[0][0]
-    assert "Import" in query_arg or "import" in query_arg.lower()
+    assert "MATCH (d)" in query_arg
+    assert "labels(d)" in query_arg
 
 def test_get_dependencies_returns_dependency_nodes():
     indexer = _make_indexer(MOCK_IMPORT_RESULTS)
