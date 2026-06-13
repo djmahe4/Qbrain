@@ -284,14 +284,19 @@ class QuantumScorer:
             )
             node_queries.append(q)
 
-        batched_node_query = ""
-        for idx, q in enumerate(node_queries):
-            if idx > 0:
-                batched_node_query += f"\nWITH 1 as d{idx}\n"
-            batched_node_query += q
+        # Windows has command line length limits, so we batch the queries
+        def run_batched(queries, batch_size=20):
+            for start in range(0, len(queries), batch_size):
+                batch = queries[start : start + batch_size]
+                batched_query = ""
+                for idx, q in enumerate(batch):
+                    if idx > 0:
+                        batched_query += f"\nWITH 1 as d{idx}\n"
+                    batched_query += q
+                if batched_query:
+                    self.indexer.query_graph(batched_query)
 
-        if batched_node_query:
-            self.indexer.query_graph(batched_node_query)
+        run_batched(node_queries)
 
         # 2. Draw semantic gravity edges between strongly bound pairs
         edge_queries = []
@@ -314,11 +319,15 @@ class QuantumScorer:
                     edge_queries.append(eq)
                     edge_idx += 1
 
-        batched_edge_query = ""
-        for idx, eq in enumerate(edge_queries):
-            if idx > 0:
-                batched_edge_query += f"\nWITH 1 as ed{idx}\n"
-            batched_edge_query += eq
+        def run_batched_edges(queries, batch_size=10):
+            for start in range(0, len(queries), batch_size):
+                batch = queries[start : start + batch_size]
+                batched_query = ""
+                for idx, q in enumerate(batch):
+                    if idx > 0:
+                        batched_query += f"\nWITH 1 as ed{idx}\n"
+                    batched_query += q
+                if batched_query:
+                    self.indexer.query_graph(batched_query)
 
-        if batched_edge_query:
-            self.indexer.query_graph(batched_edge_query)
+        run_batched_edges(edge_queries)

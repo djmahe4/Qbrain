@@ -21,12 +21,10 @@ class DocstringParser:
         )
         try:
             results = self.indexer.query_graph(query)
-            # Handle standard nested JSON response format from query_graph
-            # Standard output might look like: {"results": [...]} or a raw list of dicts.
+            if isinstance(results, list):
+                return results
             if isinstance(results, dict):
                 return results.get("results", [])
-            elif isinstance(results, list):
-                return results
             return []
         except Exception:
             # Return empty if graph query fails (e.g. no database yet initialized)
