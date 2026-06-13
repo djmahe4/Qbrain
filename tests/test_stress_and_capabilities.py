@@ -170,3 +170,260 @@ def test_stress_config_merging_complex(tmp_path):
     assert "*.ts" in config.data["rules"]["history"]["ignore"]
     # Fallback weights preserved
     assert config.data["rules"]["history"]["weights"]["symbol_change"] == 3
+
+def test_language_parser_coding_standards_checks():
+    parser = LanguageParser()
+    
+    # Test bad function naming (not verb-noun, too short/vague)
+    record_bad_name = {
+        "name": "data",
+        "file": "src/process.py",
+        "docstring": "docs",
+        "signature": "def data()",
+        "code_snippet": "def data():\n    pass"
+    }
+    res = parser.parse_coding_standards(record_bad_name)
+    assert any("verb-noun pattern" in w.lower() for w in res)
+
+    # Test function too long (> 50 lines)
+    code_long = "def long_func():\n" + "\n".join([f"    x = {i}" for i in range(60)])
+    record_long = {
+        "name": "processData",
+        "file": "src/process.py",
+        "docstring": "docs",
+        "signature": "def processData()",
+        "code_snippet": code_long
+    }
+    res_long = parser.parse_coding_standards(record_long)
+    assert any("too long" in w.lower() for w in res_long)
+
+    # Test nesting check
+    code_nested = "def nested_func():\n    if a:\n        if b:\n            if c:\n                if d:\n                    pass"
+    record_nested = {
+        "name": "processData",
+        "file": "src/process.py",
+        "docstring": "docs",
+        "signature": "def processData()",
+        "code_snippet": code_nested
+    }
+    res_nested = parser.parse_coding_standards(record_nested)
+    assert any("deep nesting" in w.lower() for w in res_nested)
+
+
+def test_language_parser_expanded_coding_standards():
+    parser = LanguageParser()
+
+    # 1. Short/vague variable name
+    res1 = parser.parse_coding_standards({
+        "name": "calculateSum",
+        "code_snippet": "def calculateSum():\n    q = 'query'\n    return q"
+    })
+    assert any("short/vague variable name" in w.lower() for w in res1)
+
+    # 2. Immutability violations
+    res2 = parser.parse_coding_standards({
+        "name": "updateList",
+        "code_snippet": "function updateList(arr) {\n    arr.push(4);\n    return arr;\n}"
+    })
+    assert any("immutability violation" in w.lower() for w in res2)
+
+    # 3. Missing try/catch on I/O
+    res3 = parser.parse_coding_standards({
+        "name": "fetchData",
+        "code_snippet": "function fetchData() {\n    let response = fetch('url');\n    return response;\n}"
+    })
+    assert any("missing try/catch" in w.lower() for w in res3)
+
+    # 4. Magic numbers check
+    res4 = parser.parse_coding_standards({
+        "name": "calculateArea",
+        "code_snippet": "def calculateArea(r):\n    return 3.14159 * r * r"
+    })
+    assert any("magic number" in w.lower() for w in res4)
+
+    # 5. Boolean parameter flags
+    res5 = parser.parse_coding_standards({
+        "name": "setupUser",
+        "signature": "setupUser(is_active: bool)",
+        "code_snippet": "def setupUser(is_active: bool):\n    pass"
+    })
+    assert any("boolean parameter flag" in w.lower() for w in res5)
+
+    # 6. Ternary hell check
+    res6 = parser.parse_coding_standards({
+        "name": "getRating",
+        "code_snippet": "const getRating = (score) => score > 90 ? 'A' : score > 80 ? 'B' : 'C';"
+    })
+    assert any("ternary hell" in w.lower() for w in res6)
+
+    # 7. Stating the obvious comment check
+    res7 = parser.parse_coding_standards({
+        "name": "incrementCounter",
+        "code_snippet": "def incrementCounter():\n    # increment x by 1\n    x += 1"
+    })
+    assert any("stating the obvious" in w.lower() for w in res7)
+
+    # 8. Sequential awaits check
+    res8 = parser.parse_coding_standards({
+        "name": "loadDashboard",
+        "code_snippet": "async function loadDashboard() {\n    const user = await fetchUser();\n    const posts = await fetchPosts();\n}"
+    })
+    assert any("sequential awaits" in w.lower() for w in res8)
+
+
+def test_language_parser_architectural_and_performance_checks():
+    parser = LanguageParser()
+
+    # 1. Parameter count smell (5+ params in signature)
+    res_param_smell = parser.parse_coding_standards({
+        "name": "processData",
+        "signature": "def processData(a, b, c, d, e)",
+        "code_snippet": "def processData(a, b, c, d, e):\n    pass"
+    })
+    assert any("parameter count" in w.lower() for w in res_param_smell)
+
+    # 2. File naming conventions: components/
+    res_component_bad = parser.parse_coding_standards({
+        "name": "myComponent",
+        "file": "src/components/button.tsx",
+        "code_snippet": "export default function button() {}"
+    })
+    assert any("components/" in w.lower() and "pascalcase" in w.lower() for w in res_component_bad)
+
+    res_component_good = parser.parse_coding_standards({
+        "name": "MyComponent",
+        "file": "src/components/Button.tsx",
+        "code_snippet": "export default function Button() {}"
+    })
+    assert not any("components/" in w.lower() for w in res_component_good)
+
+    # 3. File naming conventions: hooks/
+    res_hook_bad = parser.parse_coding_standards({
+        "name": "useAuth",
+        "file": "src/hooks/use_auth.ts",
+        "code_snippet": "export function use_auth() {}"
+    })
+    assert any("hooks/" in w.lower() and "camelcase" in w.lower() for w in res_hook_bad)
+
+    res_hook_good = parser.parse_coding_standards({
+        "name": "useAuth",
+        "file": "src/hooks/useAuth.ts",
+        "code_snippet": "export function useAuth() {}"
+    })
+    assert not any("hooks/" in w.lower() for w in res_hook_good)
+
+    # 4. API endpoint verb names
+    res_api_bad = parser.parse_coding_standards({
+        "name": "getUsers",
+        "file": "src/api/get_users.ts",
+        "code_snippet": "export function getUsers() {}"
+    })
+    assert any("api endpoint" in w.lower() and "verb" in w.lower() for w in res_api_bad)
+
+    res_api_good = parser.parse_coding_standards({
+        "name": "users",
+        "file": "src/api/users.ts",
+        "code_snippet": "export function users() {}"
+    })
+    assert not any("api endpoint" in w.lower() for w in res_api_good)
+
+    # 5. SQL SELECT * performance check
+    res_sql_bad = parser.parse_coding_standards({
+        "name": "queryUsers",
+        "code_snippet": "const sql = 'SELECT * FROM users';\ndb.query(sql);"
+    })
+    assert any("select *" in w.lower() for w in res_sql_bad)
+
+    # 6. Input validation schema check
+    res_validation_bad = parser.parse_coding_standards({
+        "name": "handleRequest",
+        "signature": "handleRequest(req, res)",
+        "code_snippet": "function handleRequest(req, res) {\n    const data = req.body;\n}"
+    })
+    assert any("input validation" in w.lower() or "request/req" in w.lower() for w in res_validation_bad)
+
+    res_validation_good = parser.parse_coding_standards({
+        "name": "handleRequest",
+        "signature": "handleRequest(req, res)",
+        "code_snippet": "function handleRequest(req, res) {\n    const data = schema.validate(req.body);\n}"
+    })
+    assert not any("input validation" in w.lower() or "request/req" in w.lower() for w in res_validation_good)
+
+
+def test_language_parser_language_and_api_conventions():
+    parser = LanguageParser()
+
+    # 1. Type safety check
+    res_any1 = parser.parse_coding_standards({
+        "name": "processData",
+        "code_snippet": "const data: any = {};"
+    })
+    assert any("type safety" in w.lower() or "any" in w.lower() for w in res_any1)
+
+    res_any2 = parser.parse_coding_standards({
+        "name": "processData",
+        "code_snippet": "const data = rawData as any;"
+    })
+    assert any("type safety" in w.lower() or "any" in w.lower() for w in res_any2)
+
+    # 2. React state updates
+    res_react_bad = parser.parse_coding_standards({
+        "name": "MyComponent",
+        "code_snippet": "setCount(count + 1);"
+    })
+    assert any("react state" in w.lower() or "functional update" in w.lower() for w in res_react_bad)
+
+    res_react_good = parser.parse_coding_standards({
+        "name": "MyComponent",
+        "code_snippet": "setCount(prev => prev + 1);"
+    })
+    assert not any("react state" in w.lower() or "functional update" in w.lower() for w in res_react_good)
+
+    # 3. Empty catch blocks
+    res_catch_bad1 = parser.parse_coding_standards({
+        "name": "runJob",
+        "code_snippet": "try {\n  doSomething();\n} catch (e) {}"
+    })
+    assert any("empty catch" in w.lower() or "silent failure" in w.lower() for w in res_catch_bad1)
+
+    res_catch_bad2 = parser.parse_coding_standards({
+        "name": "runJob",
+        "code_snippet": "try {\n  doSomething();\n} catch (e) {\n  // empty\n}"
+    })
+    assert any("empty catch" in w.lower() or "silent failure" in w.lower() for w in res_catch_bad2)
+
+    res_catch_good = parser.parse_coding_standards({
+        "name": "runJob",
+        "code_snippet": "try {\n  doSomething();\n} catch (e) {\n  console.error(e);\n}"
+    })
+    assert not any("empty catch" in w.lower() or "silent failure" in w.lower() for w in res_catch_good)
+
+    # 4. API response format check
+    # Check under api/ path with HTTP verb method
+    res_api_bad1 = parser.parse_coding_standards({
+        "name": "getUsers",
+        "file": "src/api/users.ts",
+        "code_snippet": "res.json({ users: [] });"
+    })
+    assert any("success" in w.lower() and "response" in w.lower() for w in res_api_bad1)
+
+    # Check under api/ path with endpoint file
+    res_api_bad2 = parser.parse_coding_standards({
+        "name": "handler",
+        "file": "src/api/endpoint.ts",
+        "code_snippet": "return { status: 200, body: JSON.stringify({ data: 123 }) };"
+    })
+    assert any("success" in w.lower() and "response" in w.lower() for w in res_api_bad2)
+
+    # Good API response
+    res_api_good = parser.parse_coding_standards({
+        "name": "getUsers",
+        "file": "src/api/users.ts",
+        "code_snippet": "res.json({ success: true, users: [] });"
+    })
+    assert not any("success" in w.lower() and "response" in w.lower() for w in res_api_good)
+
+
+
+
+

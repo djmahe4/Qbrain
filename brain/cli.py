@@ -478,6 +478,8 @@ def library_sync():
             funcs = parser.get_functions_with_docstrings()
             all_warnings = []
             for f in funcs:
+                snippet_res = indexer.get_code_snippet(f.get("name"))
+                f["code_snippet"] = snippet_res.get("code") or ""
                 parsed_genome = parser.parse_genome(f)
                 if parsed_genome.get("warnings"):
                     all_warnings.append({

@@ -1,7 +1,7 @@
 import pytest
 import os
 import time
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from brain.librarian import LibrarianEngine
 
 def test_librarian_creates_folders(tmp_path):
@@ -117,3 +117,47 @@ def test_librarian_exports_warnings(tmp_path):
     assert "[[badFunc]]" in content
     assert "mismatchedFunc" in content
     assert "signature parameters are not documented" in content
+
+
+@patch("brain.cli.get_engine")
+def test_library_sync_code_snippet_warnings(mock_get_engine, tmp_path):
+    from typer.testing import CliRunner
+    from brain.cli import app
+    from unittest.mock import patch
+
+    vault_path = tmp_path / "obsidian_vault"
+    mock_config = MagicMock()
+    mock_config.repo_path = str(tmp_path)
+    mock_config.data = {"vault_path": str(vault_path)}
+
+    mock_indexer = MagicMock()
+    mock_indexer.query_graph.return_value = [{
+        "name": "tooLongFunction",
+        "docstring": "This is a docstring.",
+        "file": "src/utils.py",
+        "line": 10,
+        "complexity": 2.0,
+        "sideEffects": 0.0,
+        "isExported": True,
+        "signature": "def tooLongFunction()",
+        "language": "python"
+    }]
+    mock_indexer.get_code_snippet.return_value = {
+        "code": "def tooLongFunction():\n" + "\n" * 55
+    }
+
+    mock_get_engine.return_value = (mock_config, mock_indexer, MagicMock(), MagicMock())
+
+    runner = CliRunner()
+    result = runner.invoke(app, ["library", "sync"])
+
+    assert result.exit_code == 0
+    warnings_file = vault_path / "rules" / "warnings.md"
+    assert os.path.exists(warnings_file)
+    with open(warnings_file, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    assert "# Docstring & Quality Invariants Warnings" in content
+    assert "[[tooLongFunction]]" in content
+    assert "Function is too long (> 50 lines)" in content
+

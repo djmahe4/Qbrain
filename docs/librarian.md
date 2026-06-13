@@ -84,3 +84,27 @@ During `qbrain library sync`, the system evaluates the structural completeness o
 - **Missing Docstrings**: Triggers a warning if a function or method has an empty or missing comment block.
 - **Malformed Docstrings**: Compares signature parameters against documented `@param` parameters. For languages like Python, JS/TS, C++, Go, Rust, and Solidity, a warning is raised if parameters declared in the signature are completely undocumented.
 - **Reporting**: Discovered violations are compiled and saved to `rules/warnings.md` in the Obsidian vault, using standard Markdown tables with internal linkages.
+
+### Coding Standards Enforcement (cc-skill-coding-standards)
+
+The Librarian runs a static analysis suite checking function code snippets for the following violations:
+1. **Naming Patterns**:
+   - Functions must start with action verbs (e.g. `get`, `set`, `validate`, `fetch`).
+   - Short/vague variable names (e.g., single/two-character variables) trigger warnings unless used as standard loop indices.
+2. **File Naming & Project Structure**:
+   - Files in `components/` must be `PascalCase` (e.g. `Button.tsx`).
+   - Files in `hooks/` must be `camelCase` starting with `use` (e.g. `useAuth.ts`).
+3. **State Management**:
+   - Warnings are raised if state updates inside React components directly reference the state variable (e.g. `setCount(count + 1)`) instead of using functional updates (`setCount(prev => prev + 1)`).
+4. **Type Safety**:
+   - Identifies usages of `: any` or `as any` type bypass annotations.
+5. **API Conventions & Response Formats**:
+   - Checks if routes under the `api/` directory contain actions/verbs in their filename paths.
+   - Verifies JSON responses returned by API endpoint files contain a `"success"` Boolean key.
+6. **Error Handling**:
+   - Identifies empty `catch` blocks (silent failure warnings).
+   - Warns on file-system or network operations (`fetch`, `open`) that are not wrapped inside try/except/catch blocks.
+7. **Performance & Code Smells**:
+   - Warns on SQL queries selecting all columns (e.g. `select('*')` or `SELECT *`).
+   - Warns if a function's signature defines 5 or more parameters.
+   - Identifies sequential awaits of independent calls, recommending `Promise.all` parallelization.
