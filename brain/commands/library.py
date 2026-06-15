@@ -143,6 +143,10 @@ def sync_library(config, indexer, console):
                 # Fetch vulnerabilities specific to this symbol
                 symbol_vulns = [v for v in vulnerabilities if v.get("function") == name]
                 
+                start_l = f.get("line")
+                end_l = f.get("end_line")
+                line_range = [int(start_l), int(end_l)] if (start_l is not None and end_l is not None) else None
+
                 symbol_data = {
                     "name": name,
                     "language": f.get("language") or "generic",
@@ -159,9 +163,53 @@ def sync_library(config, indexer, console):
                     "semantic_neighbors": semantic_neighbors.get(name, []),
                     "callers": calls_map.get(name, {}).get("callers", []),
                     "callees": calls_map.get(name, {}).get("callees", []),
-                    "vulnerabilities": symbol_vulns
+                    "vulnerabilities": symbol_vulns,
+                    "line": int(start_l) if start_l is not None else None,
+                    "line_range": line_range
                 }
                 engine.export_symbol(symbol_data)
+            
+            # 8. Export files
+            console.print("Exporting file mappings...")
+            files_map = {}
+            for f in funcs:
+                f_path = f.get("file")
+                if f_path:
+                    files_map.setdefault(f_path, []).append(f)
+            
+            for f_path, file_funcs in files_map.items():
+                lang = file_funcs[0].get("language") or "generic"
+                symbols_list = [fn.get("name") for fn in file_funcs if fn.get("name")]
+                
+                lines_of_code = 0
+                size_bytes = 0
+                full_path = os.path.join(config.repo_path, f_path)
+                if os.path.exists(full_path):
+                    try:
+                        with open(full_path, "r", encoding="utf-8", errors="ignore") as file_obj:
+                            lines_of_code = len(file_obj.readlines())
+                        size_bytes = os.path.getsize(full_path)
+                    except Exception:
+                        pass
+                else:
+                    max_end = 0
+                    for fn in file_funcs:
+                        el = fn.get("end_line")
+                        if el is not None:
+                            try:
+                                max_end = max(max_end, int(el))
+                            except ValueError:
+                                pass
+                    lines_of_code = max_end if max_end > 0 else 0
+                
+                file_data = {
+                    "file_path": f_path,
+                    "language": lang,
+                    "lines_of_code": lines_of_code,
+                    "size_bytes": size_bytes,
+                    "symbols": symbols_list
+                }
+                engine.export_file(file_data)
             
             # Export warnings
             engine.export_warnings(all_warnings)

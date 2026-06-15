@@ -193,3 +193,61 @@ def test_librarian_enrichment_export_branch_diff(tmp_path):
     assert "## 📝 Modified Files & Relevance Scores" in content
     assert "physics/trajectory.py" in content
     assert "models/user.py" in content
+
+
+def test_librarian_enrichment_symbol_line_number(tmp_path):
+    vault_path = tmp_path / "obsidian_vault"
+    engine = LibrarianEngine(str(tmp_path), str(vault_path))
+    engine.setup_vault()
+
+    symbol_data = {
+        "name": "calculateTrajectory",
+        "language": "python",
+        "file": "physics/trajectory.py",
+        "signature": "def calculateTrajectory(velocity, angle)",
+        "line": 42,
+        "line_range": [42, 45]
+    }
+
+    engine.export_symbol(symbol_data)
+    symbol_file = vault_path / "symbols" / "calculateTrajectory.md"
+    assert os.path.exists(symbol_file)
+
+    with open(symbol_file, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    parts = content.split("---")
+    frontmatter = yaml.safe_load(parts[1])
+    assert frontmatter.get("line") == 42
+    assert frontmatter.get("line_range") == [42, 45]
+    assert "**Line:** 42" in content
+
+
+def test_librarian_enrichment_export_file(tmp_path):
+    vault_path = tmp_path / "obsidian_vault"
+    engine = LibrarianEngine(str(tmp_path), str(vault_path))
+    engine.setup_vault()
+
+    file_data = {
+        "file_path": "physics/trajectory.py",
+        "language": "python",
+        "lines_of_code": 120,
+        "size_bytes": 4096,
+        "symbols": ["calculateTrajectory", "simulateOrbit"]
+    }
+
+    engine.export_file(file_data)
+    file_doc = vault_path / "files" / "physics_trajectory_py.md"
+    assert os.path.exists(file_doc)
+
+    with open(file_doc, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    assert "# File: physics/trajectory.py" in content
+    assert "## Metadata" in content
+    assert "- **Language:** python" in content
+    assert "- **Lines of Code:** 120" in content
+    assert "- **Size:** 4096 bytes" in content
+    assert "## Symbols Defined" in content
+    assert "- [[calculateTrajectory]]" in content
+    assert "- [[simulateOrbit]]" in content

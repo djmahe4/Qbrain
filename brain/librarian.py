@@ -188,6 +188,10 @@ class LibrarianEngine:
             frontmatter["potential_energy"] = symbol_data.get("potential_energy")
         if symbol_data.get("archetype") is not None:
             frontmatter["archetype"] = symbol_data.get("archetype")
+        if symbol_data.get("line") is not None:
+            frontmatter["line"] = symbol_data.get("line")
+        if symbol_data.get("line_range") is not None:
+            frontmatter["line_range"] = symbol_data.get("line_range")
         
         filepath = self._safe_path("symbols", f"{name}.md")
         with open(filepath, "w", encoding="utf-8") as f:
@@ -195,6 +199,8 @@ class LibrarianEngine:
             yaml.safe_dump(frontmatter, f, default_flow_style=False)
             f.write("---\n\n")
             f.write(f"# Symbol: {name}\n\n")
+            if symbol_data.get("line") is not None:
+                f.write(f"**Line:** {symbol_data.get('line')}\n\n")
             if symbol_data.get("docstring"):
                 f.write(f"## Documentation\n{symbol_data.get('docstring')}\n\n")
             if symbol_data.get("params"):
@@ -248,6 +254,45 @@ class LibrarianEngine:
                 f.write(f"```{lang}\n")
                 f.write(symbol_data["code_snippet"])
                 f.write("\n```\n")
+
+    def export_file(self, file_data: dict):
+        file_path = file_data.get("file_path")
+        if not file_path:
+            return
+        
+        # Safe filename replacing non-alphanumeric with underscores
+        safe_name = re.sub(r"[^a-zA-Z0-9_]", "_", file_path)
+        filepath = self._safe_path("files", f"{safe_name}.md")
+        
+        frontmatter = {
+            "type": "file",
+            "file_path": file_path,
+            "language": file_data.get("language"),
+            "lines_of_code": file_data.get("lines_of_code"),
+            "size_bytes": file_data.get("size_bytes")
+        }
+        
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write("---\n")
+            yaml.safe_dump(frontmatter, f, default_flow_style=False)
+            f.write("---\n\n")
+            
+            f.write(f"# File: {file_path}\n\n")
+            f.write("## Metadata\n")
+            if file_data.get("language"):
+                f.write(f"- **Language:** {file_data.get('language')}\n")
+            if file_data.get("lines_of_code") is not None:
+                f.write(f"- **Lines of Code:** {file_data.get('lines_of_code')}\n")
+            if file_data.get("size_bytes") is not None:
+                f.write(f"- **Size:** {file_data.get('size_bytes')} bytes\n")
+            f.write("\n")
+            
+            symbols = file_data.get("symbols", [])
+            if symbols:
+                f.write("## Symbols Defined\n")
+                for s in symbols:
+                    f.write(f"- [[{s}]]\n")
+                f.write("\n")
 
     def export_behavior(self, behavior_data: dict):
         name = behavior_data.get("name")

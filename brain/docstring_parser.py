@@ -18,6 +18,7 @@ class DocstringParser:
             "RETURN f.name AS name, f.docstring AS docstring, "
             "       COALESCE(f.file_path, f.file) AS file, "
             "       COALESCE(f.start_line, f.line) AS line, "
+            "       f.end_line AS end_line, "
             "       f.complexity AS complexity, f.sideEffects AS sideEffects, f.isExported AS isExported, "
             "       f.signature AS signature, f.language AS language"
         )
