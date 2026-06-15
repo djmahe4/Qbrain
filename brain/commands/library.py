@@ -6,6 +6,7 @@ from brain.vuln_scanner import VulnerabilityScanner
 from brain.entrypoint_finder import EntrypointFinder
 from brain.branch_diff import BranchDiff
 from brain.embedder import Embedder
+from brain.quantum_scorer import QuantumScorer, FunctionNode
 
 def sync_library(config, indexer, console):
     """Sync symbols, behaviors, files, changes, rules to Obsidian vault."""
@@ -42,6 +43,12 @@ def sync_library(config, indexer, console):
                         }
             except Exception as e:
                 console.print(f"[yellow]Warning: could not load cognitive metadata from graph: {e}[/yellow]")
+
+            # BUG-FIX-1: If all PE values are 0 (scorer not yet run), compute physics inline
+            # from the embeddings we will build in step 4 anyway. This prevents the vault
+            # from showing 0 for every symbol's potential_energy.
+            _pe_all_zero = all(v["potential_energy"] == 0.0 for v in cognitive_info.values()) if cognitive_info else True
+            # Deferred: filled after embeddings are available (see step 4b below)
             
             # 2. Query CALLS relationships to build caller/callee entanglements
             console.print("Mapping function entanglements...")
@@ -70,6 +77,7 @@ def sync_library(config, indexer, console):
             # 4. Generate rules/genome and compute semantic neighbors
             console.print("Computing semantic similarity neighbors...")
             semantic_neighbors = {}
+            _func_embeddings: dict = {}  # name -> np.ndarray, reused for PE computation
             try:
                 embedder = Embedder()
                 genomes = [DocstringParser.build_genome(f) for f in funcs]
@@ -77,6 +85,7 @@ def sync_library(config, indexer, console):
                     embeddings = embedder.embed(genomes)
                     for i, f in enumerate(funcs):
                         name = f.get("name")
+                        _func_embeddings[name] = embeddings[i]
                         similarities = []
                         for j, f_other in enumerate(funcs):
                             if i == j:
@@ -87,6 +96,45 @@ def sync_library(config, indexer, console):
                         semantic_neighbors[name] = similarities[:3]
             except Exception as e:
                 console.print(f"[yellow]Warning: could not calculate semantic neighbors: {e}[/yellow]")
+
+            # 4b. BUG-FIX-1: Compute potential_energy inline if graph has all-zero PE values.
+            # Build FunctionNode objects from the embeddings already computed above and run a
+            # lightweight physics simulation (30 iterations) to produce meaningful PE scores.
+            if _pe_all_zero and _func_embeddings:
+                console.print("[dim]Computing potential energy inline (graph has no cached values)...[/dim]")
+                try:
+                    import numpy as np
+                    scorer = QuantumScorer(config, indexer)
+                    nodes_for_pe = []
+                    for f in funcs:
+                        fname = f.get("name")
+                        emb = _func_embeddings.get(fname)
+                        if emb is None:
+                            continue
+                        node = FunctionNode(
+                            name=fname,
+                            embedding=emb,
+                            complexity=float(f.get("complexity", 1.0) or 1.0),
+                            side_effects=float(f.get("sideEffects", 0.0) or 0.0),
+                            is_exported=bool(f.get("isExported", False)),
+                            file=f.get("file", ""),
+                            line=int(f.get("line", 0) or 0),
+                        )
+                        nodes_for_pe.append(node)
+                    scorer.run_simulation(nodes_for_pe, iterations=30)
+                    for node in nodes_for_pe:
+                        if node.name in cognitive_info:
+                            cognitive_info[node.name]["potential_energy"] = node.potential_energy
+                        else:
+                            cognitive_info[node.name] = {
+                                "mass": node.mass,
+                                "potential_energy": node.potential_energy,
+                                "archetype": "generic",
+                            }
+                    # Persist so subsequent syncs load from graph correctly
+                    scorer.write_physics_to_graph(nodes_for_pe)
+                except Exception as e:
+                    console.print(f"[yellow]Warning: inline PE computation failed: {e}[/yellow]")
 
             # 5. Extract rules dynamically for security scanner
             rules_list = []
@@ -251,30 +299,129 @@ def sync_library(config, indexer, console):
             except Exception as e:
                 console.print(f"[yellow]Warning: could not export hotspots/archetypes reports: {e}[/yellow]")
 
-            # 8. Export behaviors based on entrypoint call paths
+            # 8. BUG-FIX-2: Export behaviors from entrypoints using calls_map (already built
+            # in step 2) rather than trace_call_path, which fails when the graph stores
+            # fully-qualified names but EntrypointFinder returns bare file-stem names.
+            # Transitions are enriched with type/constraint context from symbol metadata.
             console.print("Exporting behavior models from entrypoints...")
             try:
+                # Build a lookup: short name -> full qualified name (for graph match)
+                # Uses the functions already fetched from the graph in step 3.
+                short_to_qualified: dict = {}
+                for f in funcs:
+                    fname = f.get("name", "")
+                    # short name is the last segment after the last '.'
+                    short_to_qualified[fname.split(".")[-1]] = fname
+                    short_to_qualified[fname] = fname  # also keep full name
+
+                # Symbol metadata lookup for enrichment
+                sym_meta: dict = {}  # name -> {params, returns, docstring}
+                for f in funcs:
+                    parsed = DocstringParser.parse_genome_static(f) if hasattr(DocstringParser, 'parse_genome_static') else {}
+                    sym_meta[f.get("name", "")] = {
+                        "params": f.get("params") or parsed.get("params", []),
+                        "returns": f.get("returns") or parsed.get("returns", {}),
+                        "docstring": f.get("docstring") or "",
+                    }
+
+                def _make_transition_label(caller_name: str, callee_name: str) -> str:
+                    """Build a label like 'param:type → return:type' for context-aware transitions."""
+                    callee_info = sym_meta.get(callee_name, {})
+                    params = callee_info.get("params", [])
+                    returns = callee_info.get("returns", {})
+                    parts = []
+                    if params:
+                        # Show first param and its type if present
+                        p = params[0] if isinstance(params[0], dict) else {"name": str(params[0])}
+                        ptype = p.get("type") or ""
+                        pname = p.get("name") or ""
+                        parts.append(f"{pname}:{ptype}" if ptype else pname)
+                    if returns:
+                        rtype = returns.get("type") or (returns if isinstance(returns, str) else "")
+                        if rtype:
+                            parts.append(f"→{rtype}")
+                    return ", ".join(parts) if parts else ""
+
                 finder = EntrypointFinder(repo_path)
                 entrypoints = finder.find_entrypoints()
+
                 for ep in entrypoints:
-                    ep_func = ep.get("name", "main")
-                    trace = indexer.trace_call_path(ep_func)
-                    if trace and trace.get("callees"):
-                        states = {ep_func}
-                        transitions = []
-                        for callee in trace.get("callees", []):
-                            cname = callee.get("name")
-                            if cname:
-                                states.add(cname)
-                                if callee.get("hop") == 1:
-                                    transitions.append({"from": ep_func, "to": cname})
-                        
-                        behavior_data = {
-                            "name": f"{ep_func}-flow",
-                            "states": list(states),
-                            "transitions": transitions
+                    ep_short = ep.get("name", "main")
+                    # Resolve to graph-qualified name
+                    ep_func = short_to_qualified.get(ep_short, ep_short)
+
+                    # --- Primary: build from calls_map (no MCP round-trip needed) ---
+                    callees_from_map = calls_map.get(ep_func, {}).get("callees", [])
+
+                    # --- Fallback: try graph trace if calls_map has no data ---
+                    if not callees_from_map:
+                        try:
+                            trace = indexer.trace_call_path(ep_func)
+                            if isinstance(trace, dict) and trace.get("callees"):
+                                callees_from_map = [
+                                    c["name"] for c in trace["callees"]
+                                    if isinstance(c, dict) and c.get("name")
+                                ]
+                        except Exception:
+                            pass  # silent — trace_call_path is best-effort
+
+                    if not callees_from_map:
+                        continue
+
+                    states: set = {ep_func}
+                    transitions = []
+                    visited: set = {ep_func}
+                    queue = list(callees_from_map)
+
+                    # BFS up to depth 3 for richer state machine coverage
+                    depth_map = {c: 1 for c in callees_from_map}
+                    while queue:
+                        current = queue.pop(0)
+                        states.add(current)
+                        depth = depth_map.get(current, 1)
+                        label = _make_transition_label(ep_func, current)
+
+                        # Determine the parent (who called current)
+                        parent = ep_func if depth == 1 else None
+                        if parent is None:
+                            # Find who called current at this depth by reverse-lookup
+                            for caller_name, cmap in calls_map.items():
+                                if current in cmap.get("callees", []) and caller_name in states:
+                                    parent = caller_name
+                                    break
+
+                        if parent:
+                            transitions.append({"from": parent, "to": current, "condition": label or None})
+
+                        if depth < 3 and current not in visited:
+                            visited.add(current)
+                            next_callees = calls_map.get(current, {}).get("callees", [])
+                            for nc in next_callees:
+                                if nc not in visited:
+                                    depth_map[nc] = depth + 1
+                                    queue.append(nc)
+
+                    # Build state_meta for context table in the behavior document
+                    built_state_meta = {}
+                    for state in states:
+                        cog = cognitive_info.get(state, {})
+                        meta_entry = sym_meta.get(state, {})
+                        built_state_meta[state] = {
+                            "potential_energy": cog.get("potential_energy"),
+                            "archetype": cog.get("archetype"),
+                            "params": meta_entry.get("params", []),
+                            "returns": meta_entry.get("returns", {}),
+                            "docstring": meta_entry.get("docstring", ""),
                         }
-                        engine.export_behavior(behavior_data)
+
+                    behavior_data = {
+                        "name": f"{ep_func}-flow",
+                        "states": list(states),
+                        "transitions": transitions,
+                        "state_meta": built_state_meta,
+                    }
+                    engine.export_behavior(behavior_data)
+
             except Exception as e:
                 console.print(f"[yellow]Warning: could not export behaviors from entrypoints: {e}[/yellow]")
 

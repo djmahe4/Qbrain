@@ -298,37 +298,45 @@ class LibrarianEngine:
         name = behavior_data.get("name")
         if not name:
             return
-        
+
+        states = behavior_data.get("states", [])
+        transitions = behavior_data.get("transitions", [])
+        # Derive entrypoint as first state (the name before "-flow")
+        entrypoint = name.replace("-flow", "") if name.endswith("-flow") else (states[0] if states else "")
+        # Optional per-state symbol metadata supplied by caller
+        state_meta: dict = behavior_data.get("state_meta", {})
+
         frontmatter = {
             "type": "behavior",
             "name": name,
-            "states": behavior_data.get("states", [])
+            "entrypoint": entrypoint,
+            "state_count": len(states),
+            "transition_count": len(transitions),
+            "states": states,
         }
-        
+
         filepath = self._safe_path("behaviors", f"{name}.md")
         with open(filepath, "w", encoding="utf-8") as f:
             f.write("---\n")
             yaml.safe_dump(frontmatter, f, default_flow_style=False)
             f.write("---\n\n")
             f.write(f"# Behavior: {name}\n\n")
-            
+
             # State machine rendering
             f.write("## State Machine\n\n")
             f.write("```mermaid\n")
             f.write("stateDiagram-v2\n")
-            
+
             def _state_id(s: str) -> str:
                 return re.sub(r'[^a-zA-Z0-9_]', '_', s)
-            
-            states = behavior_data.get("states", [])
+
             for state in states:
                 safe_id = _state_id(state)
                 if safe_id != state:
                     f.write(f'    state "{state}" as {safe_id}\n')
                 else:
                     f.write(f"    {state}\n")
-            
-            transitions = behavior_data.get("transitions", [])
+
             for t in transitions:
                 frm = _state_id(t.get("from", ""))
                 to = _state_id(t.get("to", ""))
@@ -337,8 +345,45 @@ class LibrarianEngine:
                     f.write(f"    {frm} --> {to}: {cond}\n")
                 else:
                     f.write(f"    {frm} --> {to}\n")
-            
-            f.write("```\n")
+
+            f.write("```\n\n")
+
+            # Context table — semantic details for each state
+            f.write("## State Context\n\n")
+            f.write("| State | PE | Archetype | Params | Returns | Summary |\n")
+            f.write("| :--- | ---: | :--- | :--- | :--- | :--- |\n")
+            for state in states:
+                meta = state_meta.get(state, {})
+                pe = meta.get("potential_energy")
+                pe_str = f"{pe:.3f}" if isinstance(pe, (int, float)) else "—"
+                arch = meta.get("archetype") or "—"
+                params_list = meta.get("params") or []
+                if params_list:
+                    param_str = ", ".join(
+                        (f"`{p.get('name','?')}:{p.get('type','?')}`" if isinstance(p, dict) else f"`{p}`")
+                        for p in params_list[:3]
+                    )
+                else:
+                    param_str = "—"
+                ret = meta.get("returns") or {}
+                ret_type = ret.get("type") or (ret if isinstance(ret, str) else "") or "—"
+                doc = (meta.get("docstring") or "").strip().splitlines()
+                summary = doc[0][:80] if doc else "—"
+                f.write(f"| `[[{state}]]` | {pe_str} | {arch} | {param_str} | `{ret_type}` | {summary} |\n")
+
+            # Transition detail section
+            if transitions:
+                f.write("\n## Transition Details\n\n")
+                for t in transitions:
+                    frm = t.get("from", "")
+                    to = t.get("to", "")
+                    cond = t.get("condition") or ""
+                    f.write(f"- **`{frm}`** → **`{to}`**")
+                    if cond:
+                        f.write(f"  *(via `{cond}`)*")
+                    f.write("\n")
+
+
 
     def export_warnings(self, warnings_list: list):
         filepath = self._safe_path("rules", "warnings.md")
