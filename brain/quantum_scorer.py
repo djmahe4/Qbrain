@@ -5,6 +5,10 @@ from typing import List, Dict, Any, Tuple
 from brain.config import Config
 from brain.indexer import Indexer
 from brain.embedder import Embedder
+from brain.logger import get_logger
+
+logger = get_logger(__name__)
+
 
 class FunctionNode:
     def __init__(self, name: str, embedding: np.ndarray, complexity: float = 0.0,
@@ -264,11 +268,45 @@ class QuantumScorer:
 
     def write_physics_to_graph(self, functions: List[FunctionNode]):
         """
-        Write physical variables and SEMANTIC_GRAVITY edges to codebase-memory-mcp.
-        NOTE: Disabled because the underlying graph engine CLI is read-only.
+        Write physical variables and SEMANTIC_GRAVITY edges to codebase-memory-mcp in batched queries.
+        Also updates the local internal mind (SQLite).
         """
         if not functions:
             return
-        from brain.logger import get_logger
-        get_logger(__name__).warning("QuantumScorer.write_physics_to_graph is disabled: Graph engine is read-only.")
-        return
+            
+        # 1. Update Internal Mind (SQLite)
+        for fi in functions:
+            self.indexer.persistence.persist_physics(fi.name, fi.mass, fi.potential_energy, external=False)
+            
+            if fi.quantum_state:
+                belief_state = {
+                    "beliefs": {fi.quantum_state: 1.0},
+                    "status": "ACTIVE",
+                    "winner": fi.quantum_state,
+                    "support_mass": fi.mass
+                }
+                self.indexer.persistence.persist_belief(fi.name, belief_state, external=False)
+
+        # 2. Update External World (MCP Graph) with batching
+        node_queries = []
+        for i, fi in enumerate(functions):
+            # Generate a sub-query for this node
+            node_queries.append(
+                f"MATCH (f{i}:Function {{name: '{fi.name}'}}) "
+                f"SET f{i}.mass = {fi.mass}, f{i}.potential_energy = {fi.potential_energy}"
+            )
+
+        # Windows has command line length limits, so we batch the queries
+        def run_batched(queries, batch_size=20):
+            for start in range(0, len(queries), batch_size):
+                batch = queries[start : start + batch_size]
+                batched_query = ""
+                for idx, q in enumerate(batch):
+                    if idx > 0:
+                        batched_query += f"\nWITH 1 as d{idx}\n"
+                    batched_query += q
+                if batched_query:
+                    self.indexer.query_graph(batched_query)
+
+        run_batched(node_queries)
+        logger.info(f"Persisted physics metadata for {len(functions)} symbols via PersistenceManager and Graph.")

@@ -9,12 +9,21 @@ from brain.logger import get_logger
 
 logger = get_logger(__name__)
 
+from brain.persistence_manager import PersistenceManager
+
 from brain.config import Config
 
 class Indexer:
     def __init__(self, config: Config):
         self.config = config
         self._project_name: Optional[str] = None
+        
+        # Initialize dual-persistence manager
+        p_name = self._get_project_name()
+        db_path = os.path.join(config.repo_path, f".qbrain-mind-{p_name}.sqlite")
+        self.persistence = PersistenceManager(db_path, self)
+
+
 
     def _get_project_name(self) -> str:
         """Resolve the project name for the current repository."""
@@ -35,25 +44,24 @@ class Indexer:
         Runs codebase-memory-mcp tool via the CLI interface.
         """
         binary = self.config.cbm_binary
+        # Security check: Use absolute path if possible
+        resolved_binary = shutil.which(binary)
+        if resolved_binary:
+             # Ensure the resolved path is actually one of the allowed binaries
+             binary_basename = os.path.basename(resolved_binary).lower()
+        else:
+             binary_basename = os.path.basename(binary).lower()
+
         allowed_binaries = {"codebase-memory-mcp", "cbm-cli", "qbrain-helper"}
         
-        binary_basename = os.path.basename(binary).lower()
         if binary_basename.endswith((".exe", ".cmd", ".bat")):
             binary_basename = os.path.splitext(binary_basename)[0]
             
         if binary_basename not in allowed_binaries and not os.environ.get("QBRAIN_ALLOW_UNSAFE_BINARY"):
             raise RuntimeError(
-                f"Security Risk: Unrecognized binary '{binary}'. "
+                f"Security Risk: Unrecognized or unauthorized binary '{binary}'. "
                 f"Allowed binaries are: {', '.join(allowed_binaries)}."
             )
-
-        resolved_binary = shutil.which(binary)
-        if not resolved_binary and sys.platform == "win32":
-            for ext in [".cmd", ".bat", ".exe"]:
-                r = shutil.which(binary + ext)
-                if r:
-                    resolved_binary = r
-                    break
 
         exec_binary = resolved_binary or binary
         args_str = json.dumps(args)

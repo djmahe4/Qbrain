@@ -7,9 +7,9 @@ runner = CliRunner()
 
 @patch("brain.entrypoint_finder.EntrypointFinder.find_entrypoints")
 @patch("brain.cli.Config")
-def test_entrypoints_cli_command(mock_config, mock_find_entrypoints):
+def test_entrypoints_cli_command(mock_config, mock_find_entrypoints, tmp_path):
     mock_config_instance = MagicMock()
-    mock_config_instance.repo_path = "/mock/repo"
+    mock_config_instance.repo_path = str(tmp_path)
     mock_config.return_value = mock_config_instance
     
     mock_find_entrypoints.return_value = [

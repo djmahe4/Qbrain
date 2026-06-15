@@ -31,28 +31,29 @@ def test_dependency_node_types():
 # ─────────────────────────── MCP Graph Query ───────────────────────────
 
 MOCK_IMPORT_RESULTS = [
-    {"name": "axios", "type": "ExternalImport", "file": "src/api.ts", "target": "axios"},
-    {"name": "os", "type": "StdlibImport", "file": "brain/config.py", "target": "os"},
-    {"name": "./utils", "type": "RelativeImport", "file": "src/main.ts", "target": "./utils"},
-    {"name": "IERC20", "type": "SolidityImport", "file": "contracts/Vault.sol", "target": "@openzeppelin/contracts/token/ERC20/IERC20.sol"},
+    {"name": "axios", "types": ["ExternalImport"], "file": "src/api.ts", "target": "axios"},
+    {"name": "os", "types": ["StdlibImport"], "file": "brain/config.py", "target": "os"},
+    {"name": "./utils", "types": ["RelativeImport"], "file": "src/main.ts", "target": "./utils"},
+    {"name": "IERC20", "types": ["SolidityImport"], "file": "contracts/Vault.sol", "target": "@openzeppelin/contracts/token/ERC20/IERC20.sol"},
 ]
 
 def _make_indexer(results):
     indexer = MagicMock()
+    indexer.persistence = MagicMock()
     indexer.query_graph.return_value = results
     return indexer
 
 def test_get_dependencies_calls_mcp():
-    """DependencyMapper queries the MCP graph for Import nodes."""
+    """DependencyMapper queries the MCP graph for nodes."""
     indexer = _make_indexer(MOCK_IMPORT_RESULTS)
     mapper = DependencyMapper(indexer)
-    deps = mapper.get_dependencies()
+    mapper.get_dependencies()
 
     # Must have called query_graph
     indexer.query_graph.assert_called_once()
-    # Query should ask for Import nodes
+    # Query should ask for nodes
     query_arg = indexer.query_graph.call_args[0][0]
-    assert "Import" in query_arg or "import" in query_arg.lower()
+    assert "MATCH (d)" in query_arg
 
 def test_get_dependencies_returns_dependency_nodes():
     indexer = _make_indexer(MOCK_IMPORT_RESULTS)
@@ -97,8 +98,8 @@ def test_get_dependencies_handles_dict_response():
 # ─────────────────────────── API call mapping ───────────────────────────
 
 MOCK_API_CALLS = [
-    {"name": "fetchUser", "type": "APICall", "file": "src/user.ts", "target": "https://api.example.com/users"},
-    {"name": "sendRequest", "type": "HTTPCall", "file": "brain/indexer.py", "target": "http://localhost:3000"},
+    {"name": "fetchUser", "types": ["APICall"], "file": "src/user.ts", "target": "https://api.example.com/users"},
+    {"name": "sendRequest", "types": ["HTTPCall"], "file": "brain/indexer.py", "target": "http://localhost:3000"},
 ]
 
 def test_get_api_calls_classified_as_api():
@@ -111,8 +112,8 @@ def test_get_api_calls_classified_as_api():
 
 # ─────────────────────────── write_to_graph ───────────────────────────
 
-def test_write_to_graph_creates_dependency_edges():
-    """write_to_graph should call indexer.query_graph with DEPENDS_ON/CALLS_API edges."""
+def test_write_to_graph_persists_locally():
+    """write_to_graph should call indexer.persistence.persist_entanglement."""
     indexer = _make_indexer([])
     mapper = DependencyMapper(indexer)
 
@@ -122,19 +123,18 @@ def test_write_to_graph_creates_dependency_edges():
     ]
     mapper.write_to_graph(deps)
 
-    # Must have called query_graph to write edges
-    assert indexer.query_graph.call_count >= 1
-    # The cypher must mention DEPENDS_ON or IMPORTS
-    cypher_calls = [c[0][0] for c in indexer.query_graph.call_args_list]
-    combined = " ".join(cypher_calls)
-    assert "DEPENDS_ON" in combined or "IMPORTS" in combined
+    # Verify call to persistence manager
+    assert indexer.persistence.persist_entanglement.call_count == 2
+    calls = indexer.persistence.persist_entanglement.call_args_list
+    assert calls[0][0][0] == "axios"
+    assert calls[1][0][0] == "./utils"
 
 def test_write_to_graph_no_ops_on_empty():
     indexer = _make_indexer([])
     mapper = DependencyMapper(indexer)
     mapper.write_to_graph([])
-    # Should not write anything to graph if no deps
-    indexer.query_graph.assert_not_called()
+    # Should not write anything if no deps
+    assert not indexer.persistence.persist_entanglement.called
 
 def test_write_to_graph_api_edges():
     indexer = _make_indexer([])
@@ -142,9 +142,9 @@ def test_write_to_graph_api_edges():
     deps = [DependencyNode("fetchUser", "api", "src/user.ts", "https://api.example.com/users")]
     mapper.write_to_graph(deps)
 
-    cypher_calls = [c[0][0] for c in indexer.query_graph.call_args_list]
-    combined = " ".join(cypher_calls)
-    assert "CALLS_API" in combined or "api" in combined.lower()
+    # Check if persistence was called with 'api' type
+    assert indexer.persistence.persist_entanglement.called
+    assert indexer.persistence.persist_entanglement.call_args[0][2] == "api"
 
 
 # ─────────────────────────── build_dependency_summary ───────────────────────────

@@ -113,34 +113,32 @@ def test_extract_rules_empty_genome():
 
 # ─────────────────────────── write_rules_to_graph ───────────────────────────
 
-def test_write_rules_creates_business_rule_nodes():
+def test_write_rules_persists_locally():
     indexer = MagicMock()
-    indexer.query_graph.return_value = []
+    indexer.persistence = MagicMock()
     mapper = BusinessLogicMapper(indexer)
 
     rules = [
         BusinessRule("authorization", "Only owner can call.", "transferOwnership", 0.9),
-        BusinessRule("validation", "Validates new owner is not zero.", "transferOwnership", 0.85),
     ]
     mapper.write_rules_to_graph(rules)
 
-    assert indexer.query_graph.call_count >= 1
-    cypher_calls = [c[0][0] for c in indexer.query_graph.call_args_list]
-    combined = " ".join(cypher_calls)
-    assert "BUSINESS_RULE" in combined or "BusinessRule" in combined
-
-def test_write_rules_creates_implements_edges():
+    # Verify call to persistence manager
+    assert indexer.persistence.persist_belief.call_count == 1
+    args = indexer.persistence.persist_belief.call_args[0]
+    assert args[0] == "transferOwnership"
+    assert args[1]["winner"] == "authorization"
+    assert args[1]["status"] == "ACTIVE"
+def test_write_rules_handles_best_effort_external_write():
     indexer = MagicMock()
-    indexer.query_graph.return_value = []
+    indexer.persistence = MagicMock()
     mapper = BusinessLogicMapper(indexer)
 
     rules = [BusinessRule("authorization", "Only owner.", "myFunc", 0.9)]
     mapper.write_rules_to_graph(rules)
 
-    cypher_calls = [c[0][0] for c in indexer.query_graph.call_args_list]
-    combined = " ".join(cypher_calls)
-    assert "IMPLEMENTS" in combined
-
+    # Check if external=True was passed
+    assert indexer.persistence.persist_belief.call_args[1]["external"] is True
 def test_write_rules_no_op_on_empty():
     indexer = MagicMock()
     mapper = BusinessLogicMapper(indexer)
@@ -162,15 +160,15 @@ def test_map_all_processes_multiple_genomes():
     # At least some rules should be extracted across 3 genomes
     assert len(all_rules) >= 2
 
-def test_map_all_writes_to_graph():
+def test_map_all_writes_to_local_persistence():
     indexer = MagicMock()
+    indexer.persistence = MagicMock()
     indexer.query_graph.return_value = []
     mapper = BusinessLogicMapper(indexer)
 
     mapper.map_all([SOLIDITY_GENOME])
-    # map_all should also write to graph
-    assert indexer.query_graph.call_count >= 1
-
+    # map_all should call write_rules_to_graph, which calls persistence
+    assert indexer.persistence.persist_belief.called
 def test_map_all_returns_rules_for_empty_list():
     indexer = MagicMock()
     mapper = BusinessLogicMapper(indexer)

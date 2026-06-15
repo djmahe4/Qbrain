@@ -13,6 +13,10 @@ Rule categories:
 import re
 from typing import Any, Dict, List, Optional
 from brain.indexer import Indexer
+from brain.logger import get_logger
+
+logger = get_logger(__name__)
+
 
 
 # ─────────────────────────── Constants ───────────────────────────
@@ -152,14 +156,22 @@ class BusinessLogicMapper:
 
     def write_rules_to_graph(self, rules: List[BusinessRule]) -> None:
         """
-        Write BUSINESS_RULE nodes and IMPLEMENTS edges to the MCP graph.
-        NOTE: Disabled because the underlying graph engine CLI is read-only.
+        Write BUSINESS_RULE nodes and IMPLEMENTS edges to the MCP graph or local sidecar.
         """
         if not rules:
             return
-        from brain.logger import get_logger
-        get_logger(__name__).warning("BusinessLogicMapper.write_rules_to_graph is disabled: Graph engine is read-only.")
-        return
+            
+        # 1. Internal Write (Cognitive Persistence)
+        for rule in rules:
+            belief_state = {
+                "beliefs": {rule.category: rule.confidence},
+                "status": "ACTIVE" if rule.confidence > 0.8 else "SUPERPOSITION",
+                "winner": rule.category if rule.confidence > 0.8 else None,
+                "support_mass": rule.confidence
+            }
+            self.indexer.persistence.persist_belief(rule.source_function, belief_state, external=True)
+
+        logger.info(f"Persisted {len(rules)} business logic rules via PersistenceManager.")
 
     def map_all(self, genomes: List[Dict[str, Any]]) -> List[BusinessRule]:
         """

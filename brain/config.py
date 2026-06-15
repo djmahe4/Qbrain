@@ -103,6 +103,10 @@ class Config:
     def repo_path(self) -> str:
         return os.path.abspath(self.data.get("repo_path", "."))
 
+    @repo_path.setter
+    def repo_path(self, value: str):
+        self.data["repo_path"] = value
+
     @property
     def cbm_binary(self) -> str:
         return self.data.get("cbm_binary", "codebase-memory-mcp")

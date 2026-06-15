@@ -7,6 +7,10 @@ DEPENDS_ON / IMPORTS / CALLS_API edges back to the graph.
 import re
 from typing import Any, Dict, List, Optional
 from brain.indexer import Indexer
+from brain.logger import get_logger
+
+logger = get_logger(__name__)
+
 
 
 # Allowed dependency types
@@ -83,7 +87,13 @@ class DependencyMapper:
         """
         # Use a broad query that is safe for the parser
         query = "MATCH (d) RETURN d.name AS name, labels(d) AS types, d.file_path AS file, d.target AS target LIMIT 5000"
-        records = self.indexer.query_graph(query)
+        records_raw = self.indexer.query_graph(query)
+        if isinstance(records_raw, dict):
+            records = records_raw.get("results", [])
+        elif isinstance(records_raw, list):
+            records = records_raw
+        else:
+            records = []
         
         target_labels = set(self._DEPENDENCY_LABELS)
         excluded_exts = {".md", ".json", ".txt", ".lock", ".log"}
@@ -116,14 +126,17 @@ class DependencyMapper:
 
     def write_to_graph(self, deps: List[DependencyNode]) -> None:
         """
-        Write dependency edges to the MCP graph.
-        NOTE: Disabled because the underlying graph engine CLI is read-only.
+        Write dependency edges to the MCP graph or local sidecar.
         """
         if not deps:
             return
-        from brain.logger import get_logger
-        get_logger(__name__).warning("DependencyMapper.write_to_graph is disabled: Graph engine is read-only.")
-        return
+        # 1. Internal Write (Cognitive Persistence)
+        for dep in deps:
+            self.indexer.persistence.persist_entanglement(
+                dep.name, dep.target, dep.dep_type, dep.source_file
+            )
+            
+        logger.info(f"Persisted {len(deps)} dependency links via PersistenceManager.")
 
     def build_dependency_summary(self, deps: List[DependencyNode]) -> Dict[str, List[DependencyNode]]:
         """

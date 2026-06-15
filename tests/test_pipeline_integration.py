@@ -24,6 +24,8 @@ def test_full_pipeline_circuit(mocker, tmp_path):
     with open(config_file, "w") as f:
         json.dump(config_data, f)
         
+    # Mock project name to avoid CLI calls during init
+    mocker.patch("brain.indexer.Indexer._get_project_name", return_value="test-project")
     config = Config(config_file)
     indexer = Indexer(config)
     
