@@ -14,13 +14,13 @@ class DocstringParser:
         Filters out non-code files like READMEs, JSON, etc.
         """
         query = (
-            "MATCH (f:Function) "
+            "MATCH (f) "
+            "WHERE f:Function OR f:Method OR f:Module "
             "RETURN f.name AS name, f.docstring AS docstring, "
             "       COALESCE(f.file_path, f.file) AS file, "
             "       COALESCE(f.start_line, f.line) AS line, "
             "       f.end_line AS end_line, "
-            "       f.complexity AS complexity, f.sideEffects AS sideEffects, f.isExported AS isExported, "
-            "       f.signature AS signature, f.language AS language"
+            "       f.signature AS signature, f.language AS language, labels(f) AS labels"
         )
         results = self.indexer.query_graph(query)
         

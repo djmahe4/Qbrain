@@ -174,7 +174,9 @@ class LibrarianEngine:
         name = symbol_data.get("name")
         if not name:
             return
-        
+        # Clean name for safe filename
+        safe_name = name.replace("/", "_").replace("\\", "_").replace(".", "_").replace(":", "_")
+        filepath = self._safe_path("symbols", f"{safe_name}.md")
         frontmatter = {
             "type": "symbol",
             "name": name,
@@ -193,7 +195,6 @@ class LibrarianEngine:
         if symbol_data.get("line_range") is not None:
             frontmatter["line_range"] = symbol_data.get("line_range")
         
-        filepath = self._safe_path("symbols", f"{name}.md")
         with open(filepath, "w", encoding="utf-8") as f:
             f.write("---\n")
             yaml.safe_dump(frontmatter, f, default_flow_style=False)
@@ -247,6 +248,30 @@ class LibrarianEngine:
                     f.write(f"- **{vuln.get('severity', 'LOW')}**: {vuln.get('message')}\n")
                 f.write("\n")
 
+            # Dataflow & Variable States
+            var_states = symbol_data.get("variable_states", {})
+            flow_paths = symbol_data.get("flow_paths", [])
+            
+            if var_states:
+                f.write("## Variable States\n")
+                f.write("| Variable | State | Current Context |\n")
+                f.write("|:---|:---|:---|\n")
+                for var, state in var_states.items():
+                    f.write(f"| `{var}` | `{state}` | {symbol_data.get('name')} |\n")
+                f.write("\n")
+                
+            if flow_paths:
+                f.write("## Dataflow Graph\n")
+                f.write("```mermaid\n")
+                f.write("graph LR\n")
+                for i, path in enumerate(flow_paths):
+                    src = path.get("source", "internal").replace("$", "\\$")
+                    sink = path.get("sink", "unknown").replace("$", "\\$")
+                    var = path.get("variable", "data").replace("$", "\\$")
+                    state = path.get("state", "UNKNOWN")
+                    f.write(f"  P{i}_SRC[{src}] -- \"{var} ({state})\" --> P{i}_SINK[{sink}]\n")
+                f.write("```\n\n")
+
             # Implementation Code
             if symbol_data.get("code_snippet"):
                 f.write("## Implementation\n")
@@ -287,6 +312,16 @@ class LibrarianEngine:
                 f.write(f"- **Size:** {file_data.get('size_bytes')} bytes\n")
             f.write("\n")
             
+            # Global/File Variable Flows
+            var_states = file_data.get("variable_states", {})
+            if var_states:
+                f.write("## File-Level Variables\n")
+                f.write("| Variable | State |\n")
+                f.write("|:---|:---|\n")
+                for var, state in var_states.items():
+                    f.write(f"| `{var}` | `{state}` |\n")
+                f.write("\n")
+
             symbols = file_data.get("symbols", [])
             if symbols:
                 f.write("## Symbols Defined\n")
@@ -298,6 +333,9 @@ class LibrarianEngine:
         name = behavior_data.get("name")
         if not name:
             return
+        # Clean name for safe filename
+        safe_name = name.replace("/", "_").replace("\\", "_").replace(".", "_").replace(":", "_")
+        filepath = self._safe_path("behaviors", f"{safe_name}.md")
 
         states = behavior_data.get("states", [])
         transitions = behavior_data.get("transitions", [])
@@ -315,7 +353,6 @@ class LibrarianEngine:
             "states": states,
         }
 
-        filepath = self._safe_path("behaviors", f"{name}.md")
         with open(filepath, "w", encoding="utf-8") as f:
             f.write("---\n")
             yaml.safe_dump(frontmatter, f, default_flow_style=False)

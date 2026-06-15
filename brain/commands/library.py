@@ -1,5 +1,6 @@
 import os
 import typer
+import re
 from brain.librarian import LibrarianEngine
 from brain.docstring_parser import DocstringParser
 from brain.vuln_scanner import VulnerabilityScanner
@@ -7,9 +8,10 @@ from brain.entrypoint_finder import EntrypointFinder
 from brain.branch_diff import BranchDiff
 from brain.embedder import Embedder
 from brain.quantum_scorer import QuantumScorer, FunctionNode
+from brain.dataflow_engine import DataFlowEngine
+from brain.language_parser import detect_language
 
 def sync_library(config, indexer, console):
-    """Sync symbols, behaviors, files, changes, rules to Obsidian vault."""
     repo_path = config.repo_path
     vault_path = config.data.get("vault_path", os.path.join(repo_path, "obsidian_vault"))
     
@@ -21,12 +23,14 @@ def sync_library(config, indexer, console):
         with engine.lock():
             engine.setup_vault()
             
-            # 1. Load cognitive data (mass, potential_energy, archetype) from graph
-            console.print("Loading cognitive properties...")
+            # 1. Load cognitive data from graph and SQLite sidecar
+            console.print("Loading cognitive properties (merging Graph and SQLite)...")
             cognitive_info = {}
+            
+            # A. Load from graph first
             try:
                 cog_res = indexer.query_graph(
-                    "MATCH (f:Function) "
+                    "MATCH (f) WHERE f:Function OR f:Method OR f:Module "
                     "RETURN f.name AS name, f.mass AS mass, f.potential_energy AS potential_energy, f.semantic_archetype AS archetype"
                 )
                 for item in cog_res:
@@ -44,17 +48,36 @@ def sync_library(config, indexer, console):
             except Exception as e:
                 console.print(f"[yellow]Warning: could not load cognitive metadata from graph: {e}[/yellow]")
 
+            # B. Merge from SQLite (Truth for writes)
+            try:
+                internal_beliefs = indexer.persistence.get_internal_beliefs()
+                for b in internal_beliefs:
+                    name = b.get("symbol")
+                    if name:
+                        # Prioritize SQLite values for PE and Mass as they are computed by qbrain
+                        if name not in cognitive_info:
+                            cognitive_info[name] = {
+                                "mass": b.get("support_mass", 1.0),
+                                "potential_energy": b.get("potential_energy", 0.0),
+                                "archetype": b.get("winner", "generic")
+                            }
+                        else:
+                            # Update existing entries with fresh SQLite data
+                            cognitive_info[name]["mass"] = b.get("support_mass", cognitive_info[name]["mass"])
+                            cognitive_info[name]["potential_energy"] = b.get("potential_energy", cognitive_info[name]["potential_energy"])
+                            cognitive_info[name]["archetype"] = b.get("winner", cognitive_info[name]["archetype"])
+            except Exception as e:
+                console.print(f"[yellow]Warning: could not merge SQLite beliefs: {e}[/yellow]")
+
             # BUG-FIX-1: If all PE values are 0 (scorer not yet run), compute physics inline
-            # from the embeddings we will build in step 4 anyway. This prevents the vault
-            # from showing 0 for every symbol's potential_energy.
-            _pe_all_zero = all(v["potential_energy"] == 0.0 for v in cognitive_info.values()) if cognitive_info else True
-            # Deferred: filled after embeddings are available (see step 4b below)
+            _pe_all_zero = all(v.get("potential_energy", 0.0) == 0.0 for v in cognitive_info.values()) if cognitive_info else True
             
             # 2. Query CALLS relationships to build caller/callee entanglements
             console.print("Mapping function entanglements...")
             calls_map = {}
             try:
-                calls_res = indexer.query_graph("MATCH (a:Function)-[:CALLS]->(b:Function) RETURN a.name AS caller, b.name AS callee")
+                # Match all CALLS (Function, Method, Module) to capture top-level script behavior
+                calls_res = indexer.query_graph("MATCH (a)-[:CALLS]->(b) RETURN a.name AS caller, b.name AS callee")
                 for item in calls_res:
                     caller = item.get("caller")
                     callee = item.get("callee")
@@ -62,18 +85,58 @@ def sync_library(config, indexer, console):
                         calls_map.setdefault(caller, {}).setdefault("callees", []).append(callee)
                         calls_map.setdefault(callee, {}).setdefault("callers", []).append(caller)
             except Exception as e:
-                console.print(f"[yellow]Warning: could not map function calls: {e}[/yellow]")
+                console.print(f"[yellow]Warning: could not map function calls from graph: {e}[/yellow]")
 
-            # 3. Retrieve functions
+            # B. Merge from SQLite (internal discoveries)
+            try:
+                internal_ent = indexer.persistence.get_internal_entanglements()
+                for ent in internal_ent:
+                    caller = ent.get("source")
+                    callee = ent.get("target")
+                    if caller and callee:
+                        if callee not in calls_map.get(caller, {}).get("callees", []):
+                            calls_map.setdefault(caller, {}).setdefault("callees", []).append(callee)
+                        if caller not in calls_map.get(callee, {}).get("callers", []):
+                            calls_map.setdefault(callee, {}).setdefault("callers", []).append(caller)
+            except Exception as e:
+                console.print(f"[yellow]Warning: could not merge SQLite entanglements: {e}[/yellow]")
+
+            # 3. Retrieve functions and analyze dataflow
             parser = DocstringParser(indexer)
+            df_engine = DataFlowEngine()
             funcs = parser.get_functions_with_docstrings()
             
-            # Retrieve code snippets for all functions
+            # Retrieve code snippets and analyze variables/dataflow for all symbols
             for f in funcs:
                 name = f.get("name")
-                snippet_res = indexer.get_code_snippet(name)
-                f["code_snippet"] = snippet_res.get("code") or ""
-            
+                f_path = f.get("file")
+                labels = f.get("labels", [])
+                
+                # Ensure language is detected if missing
+                if not f.get("language"):
+                    f["language"] = detect_language(f_path)
+                
+                if "Module" in labels:
+                    f["code_snippet"] = ""
+                    # Modules are scripts, their code is in the file itself
+                    full_path = os.path.join(config.repo_path, f_path) if f_path else ""
+                    if full_path and os.path.exists(full_path):
+                         try:
+                             with open(full_path, "r", encoding="utf-8", errors="ignore") as file_obj:
+                                 f["code_snippet"] = file_obj.read()
+                         except Exception: pass
+                else:
+                    try:
+                        snippet_res = indexer.get_code_snippet(name)
+                        f["code_snippet"] = snippet_res.get("code") or ""
+                    except Exception:
+                        f["code_snippet"] = ""
+                
+                # Dataflow Analysis
+                df_res = df_engine.analyze_snippet(f["code_snippet"], f["language"])
+                f["variable_states"] = df_res.get("variable_states", {})
+                f["flow_paths"] = df_res.get("flow_paths", [])
+
             # 4. Generate rules/genome and compute semantic neighbors
             console.print("Computing semantic similarity neighbors...")
             semantic_neighbors = {}
@@ -98,12 +161,9 @@ def sync_library(config, indexer, console):
                 console.print(f"[yellow]Warning: could not calculate semantic neighbors: {e}[/yellow]")
 
             # 4b. BUG-FIX-1: Compute potential_energy inline if graph has all-zero PE values.
-            # Build FunctionNode objects from the embeddings already computed above and run a
-            # lightweight physics simulation (30 iterations) to produce meaningful PE scores.
             if _pe_all_zero and _func_embeddings:
                 console.print("[dim]Computing potential energy inline (graph has no cached values)...[/dim]")
                 try:
-                    import numpy as np
                     scorer = QuantumScorer(config, indexer)
                     nodes_for_pe = []
                     for f in funcs:
@@ -213,7 +273,9 @@ def sync_library(config, indexer, console):
                     "callees": calls_map.get(name, {}).get("callees", []),
                     "vulnerabilities": symbol_vulns,
                     "line": int(start_l) if start_l is not None else None,
-                    "line_range": line_range
+                    "line_range": line_range,
+                    "variable_states": f.get("variable_states", {}),
+                    "flow_paths": f.get("flow_paths", [])
                 }
                 engine.export_symbol(symbol_data)
             
@@ -250,12 +312,18 @@ def sync_library(config, indexer, console):
                                 pass
                     lines_of_code = max_end if max_end > 0 else 0
                 
+                # Aggregate file-level variable states from all functions/modules in that file
+                file_var_states = {}
+                for fn in file_funcs:
+                    file_var_states.update(fn.get("variable_states", {}))
+
                 file_data = {
                     "file_path": f_path,
                     "language": lang,
                     "lines_of_code": lines_of_code,
                     "size_bytes": size_bytes,
-                    "symbols": symbols_list
+                    "symbols": symbols_list,
+                    "variable_states": file_var_states
                 }
                 engine.export_file(file_data)
             
@@ -299,25 +367,21 @@ def sync_library(config, indexer, console):
             except Exception as e:
                 console.print(f"[yellow]Warning: could not export hotspots/archetypes reports: {e}[/yellow]")
 
-            # 8. BUG-FIX-2: Export behaviors from entrypoints using calls_map (already built
-            # in step 2) rather than trace_call_path, which fails when the graph stores
-            # fully-qualified names but EntrypointFinder returns bare file-stem names.
-            # Transitions are enriched with type/constraint context from symbol metadata.
+            # 8. BUG-FIX-2: Export behaviors from entrypoints using calls_map
             console.print("Exporting behavior models from entrypoints...")
             try:
-                # Build a lookup: short name -> full qualified name (for graph match)
-                # Uses the functions already fetched from the graph in step 3.
                 short_to_qualified: dict = {}
                 for f in funcs:
                     fname = f.get("name", "")
-                    # short name is the last segment after the last '.'
                     short_to_qualified[fname.split(".")[-1]] = fname
-                    short_to_qualified[fname] = fname  # also keep full name
+                    short_to_qualified[fname] = fname
+                    f_path = f.get("file", "")
+                    if f_path:
+                        short_to_qualified[f_path] = fname
 
-                # Symbol metadata lookup for enrichment
                 sym_meta: dict = {}  # name -> {params, returns, docstring}
                 for f in funcs:
-                    parsed = DocstringParser.parse_genome_static(f) if hasattr(DocstringParser, 'parse_genome_static') else {}
+                    parsed = parser.parse_genome(f)
                     sym_meta[f.get("name", "")] = {
                         "params": f.get("params") or parsed.get("params", []),
                         "returns": f.get("returns") or parsed.get("returns", {}),
@@ -325,13 +389,11 @@ def sync_library(config, indexer, console):
                     }
 
                 def _make_transition_label(caller_name: str, callee_name: str) -> str:
-                    """Build a label like 'param:type → return:type' for context-aware transitions."""
                     callee_info = sym_meta.get(callee_name, {})
                     params = callee_info.get("params", [])
                     returns = callee_info.get("returns", {})
                     parts = []
                     if params:
-                        # Show first param and its type if present
                         p = params[0] if isinstance(params[0], dict) else {"name": str(params[0])}
                         ptype = p.get("type") or ""
                         pname = p.get("name") or ""
@@ -347,23 +409,16 @@ def sync_library(config, indexer, console):
 
                 for ep in entrypoints:
                     ep_short = ep.get("name", "main")
-                    # Resolve to graph-qualified name
-                    ep_func = short_to_qualified.get(ep_short, ep_short)
+                    ep_path = ep.get("file", "")
+                    ep_func = short_to_qualified.get(ep_path, short_to_qualified.get(ep_short, ep_short))
 
-                    # --- Primary: build from calls_map (no MCP round-trip needed) ---
                     callees_from_map = calls_map.get(ep_func, {}).get("callees", [])
-
-                    # --- Fallback: try graph trace if calls_map has no data ---
                     if not callees_from_map:
                         try:
                             trace = indexer.trace_call_path(ep_func)
                             if isinstance(trace, dict) and trace.get("callees"):
-                                callees_from_map = [
-                                    c["name"] for c in trace["callees"]
-                                    if isinstance(c, dict) and c.get("name")
-                                ]
-                        except Exception:
-                            pass  # silent — trace_call_path is best-effort
+                                callees_from_map = [c["name"] for c in trace["callees"] if isinstance(c, dict) and c.get("name")]
+                        except Exception: pass
 
                     if not callees_from_map:
                         continue
@@ -372,27 +427,21 @@ def sync_library(config, indexer, console):
                     transitions = []
                     visited: set = {ep_func}
                     queue = list(callees_from_map)
-
-                    # BFS up to depth 3 for richer state machine coverage
                     depth_map = {c: 1 for c in callees_from_map}
+                    
                     while queue:
                         current = queue.pop(0)
                         states.add(current)
                         depth = depth_map.get(current, 1)
                         label = _make_transition_label(ep_func, current)
-
-                        # Determine the parent (who called current)
                         parent = ep_func if depth == 1 else None
                         if parent is None:
-                            # Find who called current at this depth by reverse-lookup
                             for caller_name, cmap in calls_map.items():
                                 if current in cmap.get("callees", []) and caller_name in states:
                                     parent = caller_name
                                     break
-
                         if parent:
                             transitions.append({"from": parent, "to": current, "condition": label or None})
-
                         if depth < 3 and current not in visited:
                             visited.add(current)
                             next_callees = calls_map.get(current, {}).get("callees", [])
@@ -401,69 +450,35 @@ def sync_library(config, indexer, console):
                                     depth_map[nc] = depth + 1
                                     queue.append(nc)
 
-                    # Build state_meta for context table in the behavior document
                     built_state_meta = {}
-                    for state in states:
-                        cog = cognitive_info.get(state, {})
-                        meta_entry = sym_meta.get(state, {})
-                        built_state_meta[state] = {
-                            "potential_energy": cog.get("potential_energy"),
-                            "archetype": cog.get("archetype"),
-                            "params": meta_entry.get("params", []),
-                            "returns": meta_entry.get("returns", {}),
-                            "docstring": meta_entry.get("docstring", ""),
-                        }
+                    for s in states:
+                        built_state_meta[s] = sym_meta.get(s, {})
 
                     behavior_data = {
-                        "name": f"{ep_func}-flow",
+                        "name": f"{ep_path}-flow",
                         "states": list(states),
                         "transitions": transitions,
-                        "state_meta": built_state_meta,
+                        "state_meta": built_state_meta
                     }
                     engine.export_behavior(behavior_data)
-
             except Exception as e:
                 console.print(f"[yellow]Warning: could not export behaviors from entrypoints: {e}[/yellow]")
 
-            # 9. Export git branch diff report
-            console.print("Computing git branch diff...")
+            # 9. Final branch diff scouter
             try:
+                # BranchDiff needs config and embedder
                 embedder = Embedder()
-                diff_engine = BranchDiff(config, embedder)
-                current_branch = diff_engine._run_git(["rev-parse", "--abbrev-ref", "HEAD"])
-                base_branch = config.data.get("base_branch", "main")
-                
-                # Check base_branch reference
-                try:
-                    diff_engine._run_git(["show-ref", "--verify", f"refs/heads/{base_branch}"])
-                    base_exists = True
-                except:
-                    base_exists = False
-                
-                if base_exists and current_branch != base_branch:
-                    diff_res = diff_engine.compare_branches(current_branch, base_branch)
-                    files_diff = []
-                    for f in diff_res.get("added", []):
-                        files_diff.append({"file": f, "status": "added", "churn": 1, "relevance_score": 5.0})
-                    for f in diff_res.get("deleted", []):
-                        files_diff.append({"file": f, "status": "deleted", "churn": 1, "relevance_score": 1.0})
-                    for item in diff_res.get("semantic_changes", []):
-                        files_diff.append({
-                            "file": item.get("file"),
-                            "status": "modified",
-                            "churn": 2,
-                            "relevance_score": float(item.get("distance", 0.0) * 10.0)
-                        })
-                    
-                    diff_data = {
-                        "target_branch": base_branch,
-                        "semantic_distance": float(diff_res.get("average_distance", 0.0)),
-                        "files": files_diff
-                    }
-                    engine.export_branch_diff(diff_data)
+                diff_tool = BranchDiff(config, embedder)
+                # Default to comparing HEAD with main
+                diff_summary = diff_tool.compare_branches("HEAD", "main")
+                engine.export_branch_diff(diff_summary)
             except Exception as e:
-                console.print(f"[yellow]Warning: could not compute branch differences: {e}[/yellow]")
+                console.print(f"[yellow]Warning: could not compute branch diff: {e}[/yellow]")
+                console.print(f"[yellow]Warning: could not compute branch diff: {e}[/yellow]")
 
             console.print("[green]Obsidian Vault synchronized successfully![/green]")
+
     except Exception as e:
         console.print(f"[red]Error during librarian sync:[/red] {e}")
+        import traceback
+        logger.error(traceback.format_exc())

@@ -157,33 +157,24 @@ class DependencyMapper:
         # Build batch Cypher: merge dependency nodes and create edges
         merge_statements: List[str] = []
         edge_statements: List[str] = []
-
-        for i, dep in enumerate(deps):
-            var = f"d{i}"
-            edge_type = "CALLS_API" if dep.dep_type == "api" else "DEPENDS_ON"
-            # Escape single quotes
-            safe_name = dep.name.replace("'", "\\'")
-            safe_file = dep.source_file.replace("'", "\\'")
-            safe_target = dep.target.replace("'", "\\'")
-
-            merge_statements.append(
-                f"MERGE ({var}:Dependency {{name: '{safe_name}', type: '{dep.dep_type}', target: '{safe_target}'}})"
+    def write_to_graph(self, deps: List[DependencyNode]) -> None:
+        """
+        Persist dependency links to the internal mind (SQLite).
+        Graph writes (MERGE) are skipped as they are not supported by codebase-memory-mcp.
+        """
+        if not deps:
+            return
+            
+        # 1. Internal Write (Cognitive Persistence)
+        for dep in deps:
+            self.indexer.persistence.persist_entanglement(
+                dep.name, dep.target, dep.dep_type, dep.source_file
             )
-            edge_statements.append(
-                f"MERGE (src{i}:File {{path: '{safe_file}'}}) "
-                f"MERGE (src{i})-[:{edge_type}]->({var})"
-            )
+            
+        logger.info(f"Persisted {len(deps)} dependency links to the Internal Mind (SQLite).")
 
-        try:
-            # Execute as two batched calls: one to merge nodes, one for edges
-            node_cypher = " ".join(merge_statements)
-            edge_cypher = " ".join(edge_statements)
-
-            self.indexer.query_graph(node_cypher)
-            self.indexer.query_graph(edge_cypher)
-        except Exception as e:
-            from brain.logger import get_logger
-            get_logger(__name__).warning(f"DependencyMapper.write_to_graph failed (likely read-only graph): {e}")
+        # Graph updates (MERGE/SET) are currently unsupported and cause failures.
+        # We rely on the Librarian to merge SQLite and Graph data during sync.
 
     def build_dependency_summary(self, deps: List[DependencyNode]) -> Dict[str, List[DependencyNode]]:
         """

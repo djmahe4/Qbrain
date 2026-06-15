@@ -53,6 +53,7 @@ class PersistenceManager:
                 status TEXT,       -- ACTIVE, DORMANT, SUPERPOSITION
                 winner TEXT,
                 support_mass REAL,
+                potential_energy REAL,
                 last_updated REAL,
                 PRIMARY KEY(project, symbol)
             )
@@ -84,6 +85,12 @@ class PersistenceManager:
             )
         """)
         
+        # Migration: Add potential_energy column if it doesn't exist
+        try:
+            cursor.execute("ALTER TABLE beliefs ADD COLUMN potential_energy REAL DEFAULT 0.0")
+        except sqlite3.OperationalError:
+            pass # already exists
+
         conn.commit()
         conn.close()
 
@@ -125,11 +132,11 @@ class PersistenceManager:
         cursor = conn.cursor()
         cursor.execute("""
             INSERT OR REPLACE INTO beliefs 
-            (project, symbol, belief_json, status, winner, support_mass, last_updated)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (project, symbol, belief_json, status, winner, support_mass, potential_energy, last_updated)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             self.project_id, symbol, json.dumps(state["beliefs"]), state["status"], 
-            state["winner"], state["support_mass"], time.time()
+            state["winner"], state["support_mass"], state.get("potential_energy", 0.0), time.time()
         ))
         conn.commit()
         conn.close()
@@ -150,6 +157,26 @@ class PersistenceManager:
 
     def persist_physics(self, symbol: str, mass: float, energy: float, external: bool = False):
         """Update physics metadata in both worlds."""
+        # 1. Internal Write (SQLite) - ALWAYS UPDATE
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE beliefs 
+            SET support_mass = ?, potential_energy = ?, last_updated = ? 
+            WHERE project = ? AND symbol = ?
+        """, (mass, energy, time.time(), self.project_id, symbol))
+        
+        # If record doesn't exist, insert a minimal one
+        if cursor.rowcount == 0:
+            cursor.execute("""
+                INSERT INTO beliefs (project, symbol, belief_json, status, winner, support_mass, potential_energy, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (self.project_id, symbol, "{}", "ACTIVE", "generic", mass, energy, time.time()))
+            
+        conn.commit()
+        conn.close()
+
+        # 2. External Write (Best Effort)
         if external:
             try:
                 query = (
@@ -169,6 +196,16 @@ class PersistenceManager:
         rows = cursor.fetchall()
         results = [dict(r) for r in rows]
         for r in results:
-            r["beliefs"] = json.loads(r["belief_json"])
+            r["beliefs"] = json.loads(r["belief_json"]) if r["belief_json"] != "{}" else {}
+        conn.close()
+        return results
+
+    def get_internal_entanglements(self) -> List[Dict[str, Any]]:
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM entanglements WHERE project = ?", (self.project_id,))
+        rows = cursor.fetchall()
+        results = [dict(r) for r in rows]
         conn.close()
         return results

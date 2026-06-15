@@ -178,29 +178,28 @@ class BusinessLogicMapper:
         merge_nodes: List[str] = []
         merge_edges: List[str] = []
 
-        for i, rule in enumerate(rules):
-            var = f"br{i}"
-            safe_desc = rule.description.replace("'", "\\'")[:200]
-            safe_fn = rule.source_function.replace("'", "\\'")
+    def write_rules_to_graph(self, rules: List[BusinessRule]) -> None:
+        """
+        Persist business logic rules to the internal mind (SQLite).
+        Graph writes (MERGE) are skipped as they are not supported by codebase-memory-mcp.
+        """
+        if not rules:
+            return
+            
+        # 1. Internal Write (Cognitive Persistence)
+        for rule in rules:
+            belief_state = {
+                "beliefs": {rule.category: rule.confidence},
+                "status": "ACTIVE" if rule.confidence > 0.8 else "SUPERPOSITION",
+                "winner": rule.category if rule.confidence > 0.8 else None,
+                "support_mass": rule.confidence
+            }
+            self.indexer.persistence.persist_belief(rule.source_function, belief_state, external=False)
 
-            merge_nodes.append(
-                f"MERGE ({var}:BusinessRule {{category: '{rule.category}', "
-                f"description: '{safe_desc}', confidence: {rule.confidence:.3f}}})"
-            )
-            merge_edges.append(
-                f"MATCH (f:Function {{name: '{safe_fn}'}}) "
-                f"MATCH ({var}:BusinessRule {{description: '{safe_desc}'}}) "
-                f"MERGE (f)-[:IMPLEMENTS]->({var})"
-            )
+        logger.info(f"Persisted {len(rules)} business logic rules to the Internal Mind (SQLite).")
 
-        try:
-            # Batch write: nodes first, then edges
-            self.indexer.query_graph(" ".join(merge_nodes))
-            self.indexer.query_graph(" ".join(merge_edges))
-        except Exception as e:
-            from brain.logger import get_logger
-            get_logger(__name__).warning(f"BusinessLogicMapper.write_rules_to_graph failed (likely read-only graph): {e}")
-
+        # Graph updates (MERGE/SET) are currently unsupported and cause failures.
+        # We rely on the Librarian to merge SQLite and Graph data during sync.
     def map_all(self, genomes: List[Dict[str, Any]]) -> List[BusinessRule]:
         """
         Process all genomes: extract rules and write them to the graph.

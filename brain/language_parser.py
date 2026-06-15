@@ -11,6 +11,8 @@ Produces a DocstringGenome dict:
     params: List[{name, type, description}],
     returns: {type, description},
     business_rules: List[str],
+    dataflow: List[Dict[str, str]],
+    variables: List[str]
 }
 """
 import re
@@ -36,6 +38,7 @@ _EXTENSION_MAP: Dict[str, str] = {
     ".h": "cpp",
     ".hpp": "cpp",
     ".cc": "cpp",
+    ".cc": "cpp",
     ".cxx": "cpp",
 }
 
@@ -51,7 +54,17 @@ def detect_language(file_path: str) -> str:
     return "generic"
 
 
-from brain.parsers import python, javascript, solidity, go, rust, cpp
+from brain.parsers import python, javascript, solidity, go, rust, cpp, php
+
+def extract_dataflow(code_snippet: str, language: str) -> List[Dict[str, str]]:
+    """Extract dataflow information from code snippets."""
+    if not code_snippet:
+        return []
+    
+    lang = language.lower()
+    if lang == "php":
+        return php.extract_dataflow(code_snippet)
+    return []
 
 def extract_params(docstring: str, language: str) -> List[Dict[str, str]]:
     """Extract @param / Args sections from a docstring for the given language."""
@@ -61,6 +74,8 @@ def extract_params(docstring: str, language: str) -> List[Dict[str, str]]:
     lang = language.lower()
     if lang == "python":
         return python.extract_params(docstring)
+    elif lang == "php":
+        return php.extract_params(docstring)
     elif lang in ("javascript", "typescript"):
         return javascript.extract_params(docstring)
     elif lang == "solidity":
@@ -79,6 +94,8 @@ def extract_returns(docstring: str, language: str) -> Dict[str, str]:
     lang = language.lower()
     if lang == "python":
         return python.extract_returns(docstring)
+    elif lang == "php":
+        return php.extract_returns(docstring)
     elif lang in ("javascript", "typescript"):
         return javascript.extract_returns(docstring)
     elif lang == "solidity":
@@ -97,6 +114,8 @@ def extract_business_rules(docstring: str, language: str) -> List[str]:
     lang = language.lower()
     if lang == "python":
         return python.extract_business_rules(docstring)
+    elif lang == "php":
+        return php.extract_business_rules(docstring)
     elif lang in ("javascript", "typescript"):
         return javascript.extract_business_rules(docstring)
     elif lang == "solidity":
@@ -468,6 +487,7 @@ class LanguageParser:
         file_path = record.get("file", "")
         docstring = record.get("docstring") or ""
         signature = record.get("signature") or ""
+        code_snippet = record.get("code_snippet") or ""
 
         # Language detection: explicit field wins
         language = record.get("language") or detect_language(file_path)
@@ -475,7 +495,6 @@ class LanguageParser:
         params = extract_params(docstring, language)
         returns = extract_returns(docstring, language)
         rules = extract_business_rules(docstring, language)
-        code_snippet = record.get("code_snippet") or ""
 
         warnings = []
         warnings.extend(self.parse_coding_standards(record))
@@ -490,6 +509,17 @@ class LanguageParser:
                 if sig_params and not params and language.lower() in ("python", "javascript", "typescript", "solidity", "rust", "cpp", "c"):
                     warnings.append("Malformed docstring: signature parameters are not documented")
 
+        dataflow = extract_dataflow(code_snippet, language)
+        
+        # Extract variables from dataflow
+        variables = []
+        seen_vars = set()
+        for flow in dataflow:
+            v = flow.get("variable")
+            if v and v not in seen_vars:
+                variables.append(v)
+                seen_vars.add(v)
+
         return {
             "name": name,
             "file": file_path,
@@ -500,7 +530,7 @@ class LanguageParser:
             "language": language,
             "params": params,
             "returns": returns,
-            "business_rules": rules,
             "warnings": warnings,
+            "dataflow": dataflow,
+            "variables": variables,
         }
-
