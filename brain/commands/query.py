@@ -182,6 +182,20 @@ def list_projects(config, indexer, console):
                 name = p
                 path = ""
             
+            # Match current repository path if project name corresponds to it
+            import re
+            current_repo = os.path.abspath(config.repo_path)
+            current_name = re.sub(r'[^a-zA-Z0-9]+', '-', current_repo.replace("\\", "/").rstrip("/")).strip("-")
+            
+            if name.lower() == current_name.lower():
+                path = current_repo
+            elif not path and "-" in name:
+                parts = name.split("-")
+                if len(parts) > 1 and len(parts[0]) == 1:
+                    possible_path = parts[0] + ":" + os.sep + os.sep.join(parts[1:])
+                    if os.path.exists(possible_path):
+                        path = possible_path
+            
             vault_configured = "No"
             project_vault_path = "N/A"
             if path:

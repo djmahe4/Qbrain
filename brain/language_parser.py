@@ -492,6 +492,7 @@ class LanguageParser:
 
         return {
             "name": name,
+            "file": file_path,
             "business_rules": rules,
             "code_snippet": code_snippet,
             "signature": signature,

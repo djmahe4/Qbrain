@@ -1,6 +1,7 @@
 import pytest
 import os
 import time
+import json
 from unittest.mock import MagicMock, patch
 from brain.librarian import LibrarianEngine
 
@@ -26,7 +27,8 @@ def test_librarian_lock_mechanism(tmp_path):
         lock_file = os.path.join(tmp_path, ".qbrain.lock")
         assert os.path.exists(lock_file)
         with open(lock_file, "r") as f:
-            pid = int(f.read().strip())
+            data = json.load(f)
+            pid = data.get("pid")
             assert pid == os.getpid()
 
     assert not os.path.exists(lock_file)

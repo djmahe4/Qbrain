@@ -43,9 +43,24 @@ class Indexer:
         """
         Runs codebase-memory-mcp tool via the CLI interface.
         """
+        import sys
         binary = self.config.cbm_binary
         # Security check: Use absolute path if possible
         resolved_binary = shutil.which(binary)
+        
+        # If not found globally, check the current virtual environment's bin/Scripts directory
+        if not resolved_binary:
+            venv_bin_dir = os.path.dirname(sys.executable)
+            possible_path = os.path.join(venv_bin_dir, binary)
+            if os.path.exists(possible_path):
+                resolved_binary = possible_path
+            elif sys.platform == "win32":
+                for ext in [".exe", ".cmd", ".bat"]:
+                    p = os.path.join(venv_bin_dir, binary + ext)
+                    if os.path.exists(p):
+                        resolved_binary = p
+                        break
+
         if resolved_binary:
              # Ensure the resolved path is actually one of the allowed binaries
              binary_basename = os.path.basename(resolved_binary).lower()
@@ -178,11 +193,11 @@ class Indexer:
         except json.JSONDecodeError:
             return {"raw_result": res}
 
-    def trace_call_path(self, symbol_name: str, direction: str = "both", project: Optional[str] = None) -> Dict[str, Any]:
-        """Trace the call path for a symbol."""
+    def trace_call_path(self, function_name: str, direction: str = "both", project: Optional[str] = None) -> Dict[str, Any]:
+        """Trace the call path for a function."""
         p_name = project or self._get_project_name()
         res = self._run_cli("trace_call_path", {
-            "symbol_name": symbol_name,
+            "function_name": function_name,
             "direction": direction,
             "project": p_name
         })

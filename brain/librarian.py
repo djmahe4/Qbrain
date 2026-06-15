@@ -2,6 +2,9 @@ import os
 from contextlib import contextmanager
 import yaml
 import time
+import json
+import re
+from typing import Optional
 
 class LibrarianEngine:
     def __init__(self, repo_path: str, vault_path: str):
@@ -29,6 +32,13 @@ class LibrarianEngine:
             with open(baseline_file, "w", encoding="utf-8") as f:
                 f.write("# Baseline Snapshot\n\nThis is the initial snapshot of the repository state.")
 
+    def _get_pid_create_time(self, pid: int) -> Optional[float]:
+        try:
+            import psutil
+            return psutil.Process(pid).create_time()
+        except Exception:
+            return None
+
     @contextmanager
     def lock(self, timeout: int = 30, retry_interval: float = 0.5):
         """
@@ -42,15 +52,30 @@ class LibrarianEngine:
             if os.path.exists(self.lock_file):
                 try:
                     with open(self.lock_file, "r") as f:
-                        pid_str = f.read().strip()
-                        if pid_str:
-                            pid = int(pid_str)
-                            if not self._is_pid_running(pid):
+                        content = f.read().strip()
+                    if content:
+                        try:
+                            data = json.loads(content)
+                            if isinstance(data, dict):
+                                pid = data.get("pid")
+                                create_time = data.get("create_time")
+                            else:
+                                pid = int(data) if isinstance(data, int) else None
+                                create_time = None
+                        except (json.JSONDecodeError, ValueError):
+                            pid = int(content) if content.isdigit() else None
+                            create_time = None
+                        
+                        if pid:
+                            if not self._is_pid_running(pid, create_time):
                                 busy = False
                                 break
                         else:
                             busy = False
                             break
+                    else:
+                        busy = False
+                        break
                 except (ValueError, OSError):
                     busy = False
                     break
@@ -63,19 +88,35 @@ class LibrarianEngine:
         if busy:
              raise RuntimeError(f"Database/repository is locked by a running process on {self.lock_file} (timeout after {timeout} seconds).")
 
+        current_pid = os.getpid()
+        current_create_time = self._get_pid_create_time(current_pid)
+        lock_data = {"pid": current_pid, "create_time": current_create_time}
+
         try:
             # Use 'x' for atomicity if possible
             with open(self.lock_file, "x") as f:
-                f.write(str(os.getpid()))
+                json.dump(lock_data, f)
             acquired = True
         except FileExistsError:
             # Check if stale again (race condition)
             try:
                 with open(self.lock_file, "r") as f:
-                    pid = int(f.read().strip())
-                if not self._is_pid_running(pid):
+                    content = f.read().strip()
+                try:
+                    data = json.loads(content)
+                    if isinstance(data, dict):
+                        pid = data.get("pid")
+                        create_time = data.get("create_time")
+                    else:
+                        pid = int(data) if isinstance(data, int) else None
+                        create_time = None
+                except (json.JSONDecodeError, ValueError):
+                    pid = int(content) if content.isdigit() else None
+                    create_time = None
+                
+                if pid and not self._is_pid_running(pid, create_time):
                     with open(self.lock_file, "w") as f:
-                        f.write(str(os.getpid()))
+                        json.dump(lock_data, f)
                     acquired = True
             except (ValueError, OSError):
                 pass
@@ -84,8 +125,6 @@ class LibrarianEngine:
 
         if not acquired:
              raise RuntimeError(f"Could not acquire lock on {self.lock_file} within {timeout} seconds (race condition).")
-
-
 
         try:
             yield
@@ -96,13 +135,21 @@ class LibrarianEngine:
                 except OSError:
                     pass
 
-    def _is_pid_running(self, pid: int) -> bool:
+    def _is_pid_running(self, pid: int, expected_create_time: Optional[float] = None) -> bool:
         if pid <= 0:
             return False
         try:
             # Under Windows or Unix, this checks if process is running
             import psutil
-            return psutil.pid_exists(pid)
+            exists = psutil.pid_exists(pid)
+            if exists and expected_create_time is not None:
+                try:
+                    actual_create_time = psutil.Process(pid).create_time()
+                    if abs(actual_create_time - expected_create_time) > 1.0:
+                        return False
+                except Exception:
+                    pass
+            return exists
         except ImportError:
             # Fallback
             if os.name == 'nt':
@@ -180,14 +227,21 @@ class LibrarianEngine:
             f.write("```mermaid\n")
             f.write("stateDiagram-v2\n")
             
+            def _state_id(s: str) -> str:
+                return re.sub(r'[^a-zA-Z0-9_]', '_', s)
+            
             states = behavior_data.get("states", [])
             for state in states:
-                f.write(f"    {state}\n")
+                safe_id = _state_id(state)
+                if safe_id != state:
+                    f.write(f'    state "{state}" as {safe_id}\n')
+                else:
+                    f.write(f"    {state}\n")
             
             transitions = behavior_data.get("transitions", [])
             for t in transitions:
-                frm = t.get("from")
-                to = t.get("to")
+                frm = _state_id(t.get("from", ""))
+                to = _state_id(t.get("to", ""))
                 cond = t.get("condition")
                 if cond:
                     f.write(f"    {frm} --> {to}: {cond}\n")
