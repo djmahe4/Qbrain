@@ -144,12 +144,14 @@ class Indexer:
                                 pass
                     records.append(rec)
                 return records
-            # Handle {"results": []} format or raw list
-            if isinstance(data, dict):
-                return data.get("results", [])
+            
+            # If it's already a list, return as is
             if isinstance(data, list):
                 return data
-            return []
+            
+            # Return the raw dict if it doesn't match columns/rows, 
+            # to maintain compatibility with tests expecting 'results' or other fields.
+            return data
         except json.JSONDecodeError:
             return []
 

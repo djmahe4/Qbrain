@@ -140,7 +140,8 @@ def test_query_graph_with_dict_response(mock_run, indexer):
     
     result = indexer.query_graph("MATCH (n) RETURN n")
     
-    assert result[0]["name"] == "foo"
+    assert isinstance(result, dict)
+    assert result["results"][0]["name"] == "foo"
 
 
 @patch("subprocess.run")

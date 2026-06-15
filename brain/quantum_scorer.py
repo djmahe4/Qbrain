@@ -270,6 +270,7 @@ class QuantumScorer:
         """
         Write physical variables and SEMANTIC_GRAVITY edges to codebase-memory-mcp in batched queries.
         Also updates the local internal mind (SQLite).
+        Optimistic write: fails silently with a warning if the graph is read-only.
         """
         if not functions:
             return
@@ -287,16 +288,21 @@ class QuantumScorer:
                 }
                 self.indexer.persistence.persist_belief(fi.name, belief_state, external=False)
 
-        # 2. Update External World (MCP Graph) with batching
+        # 2. Update node properties in a single batched query
         node_queries = []
         for i, fi in enumerate(functions):
-            # Generate a sub-query for this node
-            node_queries.append(
-                f"MATCH (f{i}:Function {{name: '{fi.name}'}}) "
-                f"SET f{i}.mass = {fi.mass}, f{i}.potential_energy = {fi.potential_energy}"
+            name_escaped = fi.name.replace('"', '\\"')
+            q = (
+                f'MATCH (f{i}:Function) '
+                f'WHERE f{i}.name = "{name_escaped}" '
+                f'SET f{i}.mass = {fi.mass}, '
+                f'f{i}.potential_energy = {fi.potential_energy}, '
+                f'f{i}.business_score = {fi.business_score}, '
+                f'f{i}.cluster_centrality = {fi.cluster_centrality}, '
+                f'f{i}.quantum_state = "{fi.quantum_state}"'
             )
+            node_queries.append(q)
 
-        # Windows has command line length limits, so we batch the queries
         def run_batched(queries, batch_size=20):
             for start in range(0, len(queries), batch_size):
                 batch = queries[start : start + batch_size]
@@ -306,7 +312,49 @@ class QuantumScorer:
                         batched_query += f"\nWITH 1 as d{idx}\n"
                     batched_query += q
                 if batched_query:
-                    self.indexer.query_graph(batched_query)
+                    try:
+                        self.indexer.query_graph(batched_query)
+                    except Exception as e:
+                        from brain.logger import get_logger
+                        get_logger(__name__).warning(f"QuantumScorer node update failed: {e}")
 
         run_batched(node_queries)
         logger.info(f"Persisted physics metadata for {len(functions)} symbols via PersistenceManager and Graph.")
+
+        # 3. Draw semantic gravity edges between strongly bound pairs
+        edge_queries = []
+        edge_idx = 0
+        for i, fi in enumerate(functions):
+            for j, fj in enumerate(functions):
+                if i >= j:
+                    continue
+                dist_sem = Embedder.semantic_distance(fi.embedding, fj.embedding)
+                force = self.gravitational_force(fi, fj, dist_sem)
+                if force > 0.5:
+                    fi_escaped = fi.name.replace('"', '\\"')
+                    fj_escaped = fj.name.replace('"', '\\"')
+                    eq = (
+                        f'MATCH (a{edge_idx}:Function {{name: "{fi_escaped}"}}), '
+                        f'(b{edge_idx}:Function {{name: "{fj_escaped}"}}) '
+                        f'MERGE (a{edge_idx})-[r{edge_idx}:SEMANTIC_GRAVITY]->(b{edge_idx}) '
+                        f'SET r{edge_idx}.force = {force}'
+                    )
+                    edge_queries.append(eq)
+                    edge_idx += 1
+
+        def run_batched_edges(queries, batch_size=10):
+            for start in range(0, len(queries), batch_size):
+                batch = queries[start : start + batch_size]
+                batched_query = ""
+                for idx, q in enumerate(batch):
+                    if idx > 0:
+                        batched_query += f"\nWITH 1 as ed{idx}\n"
+                    batched_query += q
+                if batched_query:
+                    try:
+                        self.indexer.query_graph(batched_query)
+                    except Exception as e:
+                        from brain.logger import get_logger
+                        get_logger(__name__).warning(f"QuantumScorer edge update failed: {e}")
+
+        run_batched_edges(edge_queries)
