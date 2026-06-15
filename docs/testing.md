@@ -7,10 +7,12 @@ This document describes the testing structure and verification results implement
 We have implemented a comprehensive test suite covering core logic, security, and integration:
 
 - **Core Parsers**: `tests/test_language_parser.py` validates multi-language docstring extraction.
-- **Security Hardening**: 
+- **Security & Reliability Hardening**: 
     - `tests/test_indexer_security.py`: Verifies binary name allowlisting.
     - `tests/test_librarian_security.py`: Tests path sanitization and traversal prevention.
     - `tests/test_librarian_lock.py`: Verifies multi-process locking and retry logic.
+- **Obsidian Vault Exporter Enrichment**:
+    - `tests/test_librarian_enrichment.py`: Validates enriched symbol YAML metadata, implementation snippets, semantic neighbors, entanglements, and centralized reports.
 - **Robustness & Vibe Auditing**:
     - `tests/test_vibe_auditor_integration.py`: Validates security, robustness, and performance semantic checks.
     - `tests/test_async_safety.py`: Detects blocking calls in `async def` blocks.
@@ -38,5 +40,5 @@ Tests are executed using `uv` to ensure a consistent environment:
 uv run pytest -v
 ```
 
-All 157 test cases are passing successfully as of 2026-06-13.
+All 177 test cases are passing successfully as of 2026-06-15.
 

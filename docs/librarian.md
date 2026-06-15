@@ -14,6 +14,7 @@ obsidian_vault/
  ├── files/                 # File structural maps and file-level metrics
  ├── behaviors/             # User journeys, execution flows, and state machines
  ├── changes/
+ │    ├── branch_diff.md    # Branch divergence & semantic diff summaries
  │    ├── recent/           # High-relevance commits waiting for inspection
  │    └── archive/          # Archived historical changes
  ├── rules/                 # Extracted coding invariants and business policies
@@ -26,11 +27,13 @@ obsidian_vault/
 
 To prevent multiple processes from corrupting the vault, the librarian uses a robust, retry-aware locking mechanism:
 
-1. **Acquire**: Attempts to write a `.qbrain.lock` file containing the current PID.
-2. **Atomic Creation**: Uses `'x'` mode to prevent race conditions during file creation.
-3. **Retry Logic**: If the lock is held, it waits and retries for up to 30 seconds before timing out.
-4. **Stale Lock Cleanup**: Automatically identifies and clears stale locks if the recorded PID is no longer active on the system.
-5. **Release**: Ensures the lock is removed even if the process crashes or an exception is raised.
+1. **Acquire**: Attempts to write a `.qbrain.lock` file.
+2. **Metadata Payload**: Writes JSON metadata (`pid` and `create_time`) to the lock file.
+3. **Backward Compatibility**: Gracefully parses legacy raw PID integers or string values alongside the JSON format.
+4. **Atomic Creation**: Uses `'x'` mode to prevent race conditions during file creation.
+5. **Retry Logic**: If the lock is held, it waits and retries for up to 30 seconds before timing out.
+6. **Stale Lock Cleanup**: Automatically identifies and clears stale locks if the recorded PID is no longer active on the system.
+7. **Release**: Ensures the lock is removed even if the process crashes or an exception is raised.
 
 ---
 
@@ -43,40 +46,79 @@ The Librarian implements a strict security boundary for vault exports:
 
 ---
 
-## 4. Behavior Flow Dual-Representation
+## 4. Symbol Page Enrichment
+
+Every symbol exported to `symbols/*.md` is fully enriched with physical, semantic, and structural data:
+
+- **YAML Frontmatter**: Includes physical metrics (`mass` representing complexity, `potential_energy` representing drift pressure) and the semantic classification (`archetype`).
+- **Implementation**: Syntax-highlighted source code block of the function or class.
+- **Semantic Neighbors**: Linked Wiki-links to the top 3 semantically closest symbols, evaluated using cosine similarity on high-dimensional code embeddings.
+- **Entanglements**: Lists of inbound callers and outbound callees to map static dependency paths.
+
+```markdown
+---
+type: symbol
+name: calculateTrajectory
+language: python
+file: physics/trajectory.py
+signature: def calculateTrajectory(velocity, angle)
+mass: 4.5
+potential_energy: 12.0
+archetype: calculation-engine
+---
+
+# Symbol: calculateTrajectory
+
+## Documentation
+Calculates projectile trajectory.
+
+...
+
+## Semantic Neighbors
+- [[simulateOrbit]] (95.0% similarity)
+- [[getGravityField]] (88.0% similarity)
+
+## Entanglements
+### Inbound Callers
+- [[runSimulation]]
+- [[main]]
+
+### Outbound Callees
+- [[math.cos]]
+- [[math.sin]]
+
+## Implementation
+```python
+def calculateTrajectory(velocity, angle):
+    g = 9.81
+    return (velocity * math.cos(angle), velocity * math.sin(angle) - 0.5 * g)
+```
+```
+
+---
+
+## 5. Behavior Flow Dual-Representation & Sanitization
 
 Behaviors are written to the vault using a hybrid markdown format designed for both human visualization and machine-parsing:
 
-
 - **Human Visualization**: Mermaid class/state diagrams (`stateDiagram-v2`) showing states, flows, and execution path conditions.
+- **State Sanitization**: Spaces, hyphens, and special characters in state names are cleaned using `_state_id` formatting, and aliased using `state "Original Name" as Safe_ID` to prevent Mermaid syntax compiler crashes.
 - **Machine/LLM Representation**: Structured YAML Frontmatter metadata containing states lists, endpoints, triggers, and signatures.
 
-````markdown
----
-type: behavior
-name: auth-flow
-states: [REQUEST, VALIDATE, SUCCESS, FAILURE]
 ---
 
-# Behavior: auth-flow
+## 6. Consolidated Central Reports
 
-## State Machine
+The Librarian aggregates repository metadata into dedicated index pages under `rules/` and `changes/`:
 
-```mermaid
-stateDiagram-v2
-    REQUEST
-    VALIDATE
-    SUCCESS
-    FAILURE
-    REQUEST --> VALIDATE
-    VALIDATE --> SUCCESS: valid_credentials
-    VALIDATE --> FAILURE: invalid_credentials
-```
-````
+1. **Security Vulnerabilities & CWE Violations (`rules/vulnerabilities.md`)**: A consolidated table detailing detected security issues, severity levels, and links to source files/symbols.
+2. **Cognitive & Complexity Hotspots (`rules/hotspots.md`)**: High mass functions (complexity hotspots) and high potential energy functions (drift/attention hotspots).
+3. **Semantic Archetypes (`rules/archetypes.md`)**: Symbols grouped by their structural and behavioral roles (e.g., `data-model`, `calculation-engine`, etc.).
+4. **Git Branch Diff (`changes/branch_diff.md`)**: Calculates semantic distance, churn, and relevance scores when comparing the active workspace against the base branch (e.g., `main`).
 
 ---
 
-## 5. Greenfield Initialization Fallback
+## 7. Greenfield Initialization Fallback
 
 If `quant-blm` is initialized or indexed in a workspace directory where `.git` is missing:
 
@@ -90,7 +132,7 @@ If `quant-blm` is initialized or indexed in a workspace directory where `.git` i
 
 ---
 
-## 6. Docstring & Quality Invariants Warnings
+## 8. Docstring & Quality Invariants Warnings
 
 During `qbrain library sync`, the system evaluates the structural completeness of each symbol's documentation:
 - **Missing Docstrings**: Triggers a warning if a function or method has an empty or missing comment block.
