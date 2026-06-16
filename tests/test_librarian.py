@@ -163,3 +163,62 @@ def test_library_sync_code_snippet_warnings(mock_get_engine, tmp_path):
     assert "[[tooLongFunction]]" in content
     assert "Function is too long (> 50 lines)" in content
 
+
+def test_librarian_exports_behavior_with_dataflow_and_variables(tmp_path):
+    vault_path = tmp_path / "obsidian_vault"
+    engine = LibrarianEngine(str(tmp_path), str(vault_path))
+    engine.setup_vault()
+
+    behavior_data = {
+        "name": "test-dataflow-flow",
+        "states": [
+            "start",
+            '[require] DVWA_WEB_PAGE_TO_ROOT . "vulnerabilities/javascript/source/{{$vulnerabilityFile}}"'
+        ],
+        "transitions": [
+            {
+                "from": "start",
+                "to": '[require] DVWA_WEB_PAGE_TO_ROOT . "vulnerabilities/javascript/source/{{$vulnerabilityFile}}"'
+            }
+        ],
+        "state_meta": {
+            "start": {
+                "variable_states": {
+                    "$var1": {"state": "TAINTED", "type": "string", "constraints": ["not null"]}
+                },
+                "flow_paths": [
+                    {"source": "$_GET", "sink": "echo", "variable": "$var1"}
+                ]
+            },
+            '[require] DVWA_WEB_PAGE_TO_ROOT . "vulnerabilities/javascript/source/{{$vulnerabilityFile}}"': {
+                "variable_states": {
+                    "$var2": {"state": "SAFE", "type": "int", "constraints": []}
+                },
+                "flow_paths": []
+            }
+        }
+    }
+
+    engine.export_behavior(behavior_data)
+    behavior_file = vault_path / "behaviors" / "test-dataflow-flow.md"
+    assert os.path.exists(behavior_file)
+    with open(behavior_file, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    # Verify state name double quotes are escaped or replaced
+    assert "Parse error" not in content
+    assert 'state "[require] DVWA_WEB_PAGE_TO_ROOT . "vulnerabilities' not in content
+    # Should be replaced by single quotes:
+    assert "state \"[require] DVWA_WEB_PAGE_TO_ROOT . 'vulnerabilities/javascript/source/{{$vulnerabilityFile}}'\" as" in content
+
+    # Verify Dynamic Variable Tracking section is present
+    assert "## Dynamic Variable Tracking" in content
+    assert "| `$var1` | `TAINTED` | string | not null |" in content
+    assert "| `$var2` | `SAFE` | int | — |" in content
+
+    # Verify Behavior Dataflow Tracking section is present
+    assert "## Behavior Dataflow Tracking" in content
+    assert "graph LR" in content
+    assert '"$_GET"' in content
+    assert '"echo"' in content
+

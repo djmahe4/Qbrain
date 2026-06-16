@@ -414,9 +414,10 @@ class LibrarianEngine:
                         "docstring": f_match.get("docstring", ""),
                         "potential_energy": 0.0,
                         "archetype": "generic",
-                        "variable_states": f_match.get("variable_states", {})
+                        "variable_states": f_match.get("variable_states", {}),
+                        "flow_paths": f_match.get("flow_paths", [])
                     }
-            built_state_meta[s] = meta or {"params": [], "returns": {}, "docstring": "", "variable_states": {}}
+            built_state_meta[s] = meta or {"params": [], "returns": {}, "docstring": "", "variable_states": {}, "flow_paths": []}
 
         is_hub = built_state_meta.get(entrypoint_func, {}).get("archetype") == "system-hub"
 
@@ -468,10 +469,12 @@ class LibrarianEngine:
             for s in states:
                 alias = self._get_safe_filename(s)
                 if not is_macro:
-                    if alias == s:
-                        f.write(f"    {s}\n")
+                    # Replace double quotes with single quotes to avoid breaking Mermaid string syntax
+                    safe_s = s.replace('"', "'")
+                    if alias == safe_s:
+                        f.write(f"    {safe_s}\n")
                     else:
-                        f.write(f'    state "{s}" as {alias}\n')
+                        f.write(f'    state "{safe_s}" as {alias}\n')
                 state_aliases[s] = alias
                 
             for t in transitions:
@@ -480,7 +483,8 @@ class LibrarianEngine:
                 cond = t.get("condition")
                 if is_macro:
                     if cond:
-                        f.write(f'  {frm} -- "{cond}" --> {to}\n')
+                        safe_cond = str(cond).replace("\n", " ").replace('"', "'")
+                        f.write(f'  {frm} -- "{safe_cond}" --> {to}\n')
                     else:
                         f.write(f"  {frm} --> {to}\n")
                 else:
@@ -512,6 +516,94 @@ class LibrarianEngine:
                 summary = doc.split("\n")[0][:100] if doc else "—"
                 f.write(f"| `[[{s}]]` | {pe} | {arch} | {params_str} | `{r}` | {summary} <br> **Invariants:** {invariants_str} |\n")
             f.write("\n")
+
+            # Aggregated Dynamic Variable Tracking
+            all_var_states = {}
+            all_flow_paths = []
+            
+            for s in states:
+                s_meta = meta.get(s, {})
+                v_states = s_meta.get("variable_states", {})
+                for var_name, var_info in v_states.items():
+                    if not isinstance(var_info, dict):
+                        continue
+                    if var_name not in all_var_states:
+                        all_var_states[var_name] = {
+                            "state": var_info.get("state", "SAFE"),
+                            "type": var_info.get("type") or "—",
+                            "constraints": list(var_info.get("constraints") or [])
+                        }
+                    else:
+                        existing = all_var_states[var_name]
+                        s1 = existing["state"]
+                        s2 = var_info.get("state", "SAFE")
+                        merged_s = "SAFE"
+                        if "TAINTED" in (s1, s2):
+                            merged_s = "TAINTED"
+                        elif "UNSAFE" in (s1, s2):
+                            merged_s = "UNSAFE"
+                        elif "CONSTANT" in (s1, s2):
+                            merged_s = "CONSTANT"
+                        
+                        existing_c = existing.get("constraints") or []
+                        new_c = var_info.get("constraints") or []
+                        merged_c = list(set(existing_c + new_c))
+                        
+                        all_var_states[var_name] = {
+                            "state": merged_s,
+                            "type": var_info.get("type") or existing.get("type") or "—",
+                            "constraints": merged_c
+                        }
+                
+                for path in s_meta.get("flow_paths", []):
+                    if isinstance(path, dict) and path not in all_flow_paths:
+                        all_flow_paths.append(path)
+            
+            if all_var_states:
+                f.write("## Dynamic Variable Tracking\n\n")
+                f.write("| Variable | State | Type | Constraints |\n")
+                f.write("| :--- | :--- | :--- | :--- |\n")
+                for var_name in sorted(all_var_states.keys()):
+                    info = all_var_states[var_name]
+                    state = info["state"]
+                    vtype = info["type"]
+                    constraints = info["constraints"]
+                    constraints_str = ", ".join(constraints) if constraints else "—"
+                    f.write(f"| `{var_name}` | `{state}` | {vtype} | {constraints_str} |\n")
+                f.write("\n")
+                
+            if all_flow_paths:
+                f.write("## Behavior Dataflow Tracking\n\n")
+                f.write("```mermaid\ngraph LR\n")
+                node_ids = {}
+                def get_node_id(name_str):
+                    if name_str not in node_ids:
+                        node_ids[name_str] = f"node_{len(node_ids)}"
+                    return node_ids[name_str]
+                
+                connections = set()
+                for path in all_flow_paths:
+                    src = path.get("source", "unknown")
+                    sink = path.get("sink", "unknown")
+                    var = path.get("variable", "")
+                    
+                    src_id = get_node_id(src)
+                    sink_id = get_node_id(sink)
+                    
+                    safe_src = str(src).replace('"', "'")
+                    safe_sink = str(sink).replace('"', "'")
+                    safe_var = str(var).replace('"', "'")
+                    
+                    if var:
+                        conn_str = f'    {src_id}["{safe_src}"] -- "{safe_var}" --> {sink_id}["{safe_sink}"]\n'
+                    else:
+                        conn_str = f'    {src_id}["{safe_src}"] --> {sink_id}["{safe_sink}"]\n'
+                    
+                    if conn_str not in connections:
+                        connections.add(conn_str)
+                        f.write(conn_str)
+                f.write("```\n\n")
+
 
     def export_narrative(self, archetype: str, symbols: List[dict]):
         """Exports a high-level narrative summary of a subsystem."""

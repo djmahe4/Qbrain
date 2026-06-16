@@ -402,7 +402,7 @@ def sync_library(config, indexer, console):
             for f in funcs:
                 name = f.get("name")
                 cog = cognitive_info.get(name, {})
-                sym_meta[name] = {"params": f.get("params", []), "returns": f.get("returns", {}), "docstring": f.get("docstring") or "", "potential_energy": cog.get("potential_energy", 0.0), "archetype": cog.get("archetype", "generic"), "variable_states": f.get("variable_states", {})}
+                sym_meta[name] = {"params": f.get("params", []), "returns": f.get("returns", {}), "docstring": f.get("docstring") or "", "potential_energy": cog.get("potential_energy", 0.0), "archetype": cog.get("archetype", "generic"), "variable_states": f.get("variable_states", {}), "flow_paths": f.get("flow_paths", [])}
 
             max_depth = config.data.get("behavior_max_depth", 10)
             max_states = config.data.get("behavior_max_states", 50)

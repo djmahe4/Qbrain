@@ -63,7 +63,7 @@ class EntrypointFinder:
 
         # 2. Cargo.toml (Rust)
         cargo_path = os.path.join(self.repo_path, "Cargo.toml")
-        if os.path.exists(cargo_path):
+        if os.path.exists(cargo_path) and tomllib is not None:
             try:
                 with open(cargo_path, "rb") as f:
                     data = tomllib.load(f)
@@ -88,7 +88,7 @@ class EntrypointFinder:
 
         # 3. pyproject.toml (Python)
         pyproj_path = os.path.join(self.repo_path, "pyproject.toml")
-        if os.path.exists(pyproj_path):
+        if os.path.exists(pyproj_path) and tomllib is not None:
             try:
                 with open(pyproj_path, "rb") as f:
                     data = tomllib.load(f)
