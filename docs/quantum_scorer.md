@@ -29,8 +29,8 @@ For scaling simulations where functional count `N > 500`, the physics engine swi
 - **Stability**: Includes safeguards against `ZeroDivisionError` during normalization for small or singular graphs.
 
 
-## 3. Graph Synchronization (`SEMANTIC_GRAVITY`)
+## 3. SQLite & Graph Synchronization
 
-Updates properties on existing node instances and writes semantic attraction boundaries directly back to `codebase-memory-mcp` using `query_graph`:
-- Updates properties: `mass`, `potential_energy`, `business_score`, `cluster_centrality`, and `quantum_state`.
-- Inserts `[SEMANTIC_GRAVITY {force: float}]` edges to represent mutual attraction.
+Updates properties on existing node instances in the SQLite "Mind" sidecar and writes semantic attraction boundaries to `codebase-memory-mcp`:
+- **Internal Persistence (Mind)**: Primary store for `mass`, `potential_energy`, `business_score`, `cluster_centrality`, and `quantum_state`.
+- **Graph Persistence (Graph)**: Best-effort write of physics metadata and `[SEMANTIC_GRAVITY {force: float}]` edges to represent mutual attraction.

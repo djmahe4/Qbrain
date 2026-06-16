@@ -54,6 +54,8 @@ Every symbol exported to `symbols/*.md` is fully enriched with physical, semanti
 - **Implementation**: Syntax-highlighted source code block of the function or class.
 - **Semantic Neighbors**: Linked Wiki-links to the top 3 semantically closest symbols, evaluated using cosine similarity on high-dimensional code embeddings.
 - **Entanglements**: Lists of inbound callers and outbound callees to map static dependency paths.
+- **Variable States Table**: Every symbol now includes a table detailing each variable's security state (`TAINTED`, `SAFE`, `CONSTANT`).
+- **Dataflow Graph**: Mermaid diagrams visualizing the path from source (e.g. `$_GET`) to sink (e.g. `echo`).
 
 ```markdown
 ---
@@ -73,6 +75,17 @@ archetype: calculation-engine
 Calculates projectile trajectory.
 
 ...
+
+## Variable States
+| Variable | State | Current Context |
+|:---|:---|:---|
+| `$name` | `SAFE` | calculateTrajectory |
+
+## Dataflow Graph
+```mermaid
+graph LR
+  P0_SRC["$_GET"] -- "$name (SAFE)" --> P0_SINK["echo"]
+```
 
 ## Semantic Neighbors
 - [[simulateOrbit]] (95.0% similarity)
@@ -167,4 +180,3 @@ The Librarian runs an exhaustive semantic analysis suite on function code snippe
    - **React State**: Recommends functional updates (`setVal(v => v + 1)`) over direct value assignment.
    - **API Schema**: Checks for Zod/Yup/Joi validation schemas when receiving requests.
    - **JSON Format**: Ensures API responses include a mandatory `success` boolean field.
-

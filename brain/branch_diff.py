@@ -24,6 +24,16 @@ class BranchDiff:
         if not re.match(r"^[a-zA-Z0-9_\-\/\.\+]+$", branch):
             raise ValueError(f"Invalid branch name: '{branch}' contains forbidden characters.")
 
+    def get_default_branch(self) -> str:
+        """Attempts to detect the default/base branch (main or master)."""
+        for candidate in ["main", "master", "develop"]:
+            try:
+                self._run_git(["rev-parse", "--verify", candidate])
+                return candidate
+            except Exception:
+                continue
+        return "main" # Fallback
+
     def _run_git(self, args: List[str]) -> str:
         repo = self.config.repo_path
         cmd = ["git"] + args

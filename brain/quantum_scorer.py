@@ -1,7 +1,7 @@
 import math
 import random
 import numpy as np
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 from brain.config import Config
 from brain.indexer import Indexer
 from brain.embedder import Embedder
@@ -172,12 +172,7 @@ class QuantumScorer:
         x_min, _, x_max, _ = node.boundary
         width = x_max - x_min
         if width / max(dist_2d, 1e-5) < theta:
-            # Use approximation
-            # Semantic representation of internal node: average embedding weight
-            # For simplicity, we can use a representative or mock semantic distance or average
-            # Since semantic coordinates are higher dimensional, we approximate semantic distance based on 2D space distance
             dist_sem = min(dist_2d, 1.0)
-            # Create a mock target node representing the center of mass
             target = FunctionNode("com", fn.embedding)
             target.mass = node.total_mass
             F = self.net_force(fn, target, dist_sem)
@@ -240,7 +235,6 @@ class QuantumScorer:
                 fi.position[1] += fi.velocity[1] * self.dt
 
         # Post-simulation scoring
-        # Calculate potential energy
         for fi in functions:
             fi.potential_energy = self.potential_energy(fi, functions)
 
@@ -260,24 +254,16 @@ class QuantumScorer:
 
             # Quantum collapse state
             if fi.business_score >= self.config.business_collapse_threshold:
-                fi.quantum_state = "collapsed_business"
+                # Heuristic for system-hub: high centrality and significant complexity
+                if cent_score > 0.6 and fi.mass > 2.5:
+                    fi.quantum_state = "system-hub"
+                else:
+                    fi.quantum_state = "collapsed_business"
             elif fi.business_score <= 0.25:
                 fi.quantum_state = "collapsed_utility"
             else:
                 fi.quantum_state = "collapsed_neutral"
 
-    def write_physics_to_graph(self, functions: List[FunctionNode]):
-        """
-        Write physical variables and SEMANTIC_GRAVITY edges to codebase-memory-mcp in batched queries.
-        Also updates the local internal mind (SQLite).
-        Optimistic write: fails silently with a warning if the graph is read-only.
-        """
-        if not functions:
-            return
-            
-        # 1. Update Internal Mind (SQLite)
-        for fi in functions:
-            self.indexer.persistence.persist_physics(fi.name, fi.mass, fi.potential_energy, external=False)
     def write_physics_to_graph(self, functions: List[FunctionNode]):
         """
         Persist physical variables and quantum states to the internal mind (SQLite).
@@ -300,6 +286,3 @@ class QuantumScorer:
                 self.indexer.persistence.persist_belief(fi.name, belief_state, external=False)
                 
         logger.info(f"Persisted physics metadata for {len(functions)} symbols to the Internal Mind (SQLite).")
-
-        # Graph updates (SET/MERGE) are currently unsupported by the MCP tool and cause failures.
-        # We rely on the Librarian to merge SQLite and Graph data during sync.

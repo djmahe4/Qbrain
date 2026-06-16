@@ -209,3 +209,23 @@ class PersistenceManager:
         results = [dict(r) for r in rows]
         conn.close()
         return results
+
+    def get_all_variable_states(self) -> Dict[str, Any]:
+        """Retrieve all variable states across all symbols."""
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT symbol, belief_json, winner FROM beliefs WHERE project = ?", (self.project_id,))
+        rows = cursor.fetchall()
+        
+        results = {}
+        for r in rows:
+            symbol = r["symbol"]
+            winner = r["winner"]
+            beliefs = json.loads(r["belief_json"]) if r["belief_json"] != "{}" else {}
+            results[symbol] = {
+                "winner": winner,
+                "beliefs": beliefs
+            }
+        conn.close()
+        return results

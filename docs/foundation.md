@@ -41,6 +41,16 @@ The loader resolves the configuration file by searching current directory and it
   - `quantum_gravity_constant`: Gravitational constant `G`.
   - `repulsive_constant`: Repulsion constant `k_repulse`.
   - `business_collapse_threshold`: Threshold for collapsing superposition to business state.
+## Dual-Persistence Intelligence Sidecar (`brain/persistence_manager.py`)
+
+To support writable state discovery (which the primary memory graph currently restricts), the system implements a "Mind" sidecar using a project-local SQLite database.
+
+- **Class**: `PersistenceManager`
+- **Data Stores**:
+  - **Internal Mind (SQLite)**: Stores writable internal beliefs, physics scores (mass, PE), security entanglements, and dataflow results. This database is named `.qbrain-mind-<project-slug>.sqlite` and resides in the target repository root.
+  - **External World (Graph)**: Acts as the primary read-only structural representation provided by `codebase-memory-mcp`.
+- **Merging Logic**: During `library sync`, the Librarian automatically merges data from both sources, prioritizing the "Mind" for internal state and the "Graph" for structural definitions.
+
 
 ---
 ---

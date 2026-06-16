@@ -1,5 +1,5 @@
 import re
-from typing import Dict, List
+from typing import Dict, List, Any
 
 _PHP_PARAM_RE = re.compile(
     r"@param\s+(?:\{([^}]*)\}\s+)?\$(\w+)\s+(.*)", re.IGNORECASE
@@ -18,7 +18,6 @@ def _parse_php_docstring(docstring: str) -> Dict[str, List[str]]:
         stripped = line.strip().lstrip("/* ").rstrip("*/ ")
         if not stripped:
             continue
-        # Check if line looks like a tag (e.g., "@param", "@return")
         if stripped.startswith("@"):
             tag = stripped.split(" ", 1)[0][1:].lower()
             current_section = tag
@@ -50,7 +49,6 @@ def extract_returns(docstring: str) -> Dict[str, str]:
 def extract_business_rules(docstring: str) -> List[str]:
     rules: List[str] = []
     sections = _parse_php_docstring(docstring)
-    # Main description often contains rules
     main = sections.get("_main", [])
     for line in main:
         stripped = line.strip()
@@ -58,32 +56,47 @@ def extract_business_rules(docstring: str) -> List[str]:
             rules.append(stripped)
     return rules
 
-def extract_dataflow(code_snippet: str) -> List[Dict[str, str]]:
+def extract_dataflow(code_snippet: str) -> List[Dict[str, Any]]:
     """
-    Identifies variable assignments and usages in a snippet.
-    Very basic regex-based dataflow for now.
+    Identifies variable assignments, usages, and synthesized dependencies in PHP.
     """
     dataflow = []
-    # Assignments: $var = ...; or $var .= ...;
-    assign_pattern = re.compile(r"\$(\w+)\s*(\.|\+|-|\*|/)?=\s*([^;]+);")
-    for match in assign_pattern.finditer(code_snippet):
-        var_name = f"${match.group(1)}"
-        op = match.group(2) or ""
-        value = match.group(3).strip()
+    
+    # 1. Globals Detection
+    for var_name in re.findall(r"\$_(SESSION|COOKIE|GET|POST|REQUEST|SERVER|FILES)\[['\"](\w+)['\"]\]", code_snippet):
         dataflow.append({
-            "variable": var_name,
-            "operation": f"{op}=",
-            "value": value
+            "type": "global_state",
+            "variable": f"$_{var_name[0]}['{var_name[1]}']",
+            "source": f"$_{var_name[0]}"
+        })
+
+    # 2. Assignments
+    # Supports $var, $obj->prop, $arr['key']
+    assign_pattern = re.compile(r"(\$[\w\->\[\]'\" ]+)\s*([\.\+\-\*\/]?=)\s*([^;]+);")
+    for match in assign_pattern.finditer(code_snippet):
+        dataflow.append({
+            "type": "assignment",
+            "variable": match.group(1).strip(),
+            "operation": match.group(2),
+            "value": match.group(3).strip()
         })
     
-    # Sinks: echo $var;, query($var), etc.
-    sink_pattern = re.compile(r"\b(echo|print|query|die|header|setcookie)\b\s*\(?([^;)]+)\)?\s*;")
-    for match in sink_pattern.finditer(code_snippet):
-        sink_func = match.group(1)
-        args = match.group(2).strip()
+    # 3. Dynamic Includes (Synthesized Dependencies)
+    include_pattern = re.compile(r"\b(include|require)(_once)?\b\s*\(?([^;]+)\)?\s*;", re.IGNORECASE)
+    for match in include_pattern.finditer(code_snippet):
         dataflow.append({
-            "sink": sink_func,
-            "args": args
+            "type": "synthesized_call",
+            "verb": match.group(1),
+            "raw_path": match.group(3).strip()
+        })
+
+    # 4. Sinks
+    sink_pattern = re.compile(r"\b(echo|print|query|die|header|setcookie|mysqli_query|mysqli_prepare|eval|exec|system|shell_exec)\b\s*\(?([^;)]+)\)?\s*;")
+    for match in sink_pattern.finditer(code_snippet):
+        dataflow.append({
+            "type": "sink",
+            "sink": match.group(1),
+            "args": match.group(2).strip()
         })
         
     return dataflow

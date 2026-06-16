@@ -75,3 +75,15 @@ Detects the main logical execution entrypoints of the codebase using configurati
   - Falling back to scanning standard filenames (`main.cpp`, `index.ts`, `app.py`, `main.go`) deep within the directory tree.
 
 
+
+## 8. Quantum DataFlow Engine (`brain/dataflow_engine.py`)
+
+Analyzes code snippets to track variable lifecycles, states, and dataflow paths.
+
+- **Class**: `DataFlowEngine`
+- **Responsibilities**:
+  - **Source Detection**: Identifies external input entrypoints (e.g., `$_GET`, `request.args`).
+  - **Sanitization Tracking**: Recognizes security-critical sanitization functions (e.g., `htmlspecialchars`).
+  - **Sink Identification**: Maps data arrival at dangerous or terminal locations (e.g., `echo`, `query`, `os.system`).
+  - **Quantum State Assignment**: Classifies variable security states into `TAINTED`, `SAFE`, or `CONSTANT` based on flow history.
+  - **Path Mapping**: Builds Mermaid-compatible dataflow paths from sources to sinks.
