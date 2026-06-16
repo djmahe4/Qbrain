@@ -148,8 +148,59 @@ class LibrarianEngine:
 
     def _get_safe_filename(self, name: str) -> str:
         """Standardized safe naming for all exported entities."""
-        return re.sub(r"[^a-zA-Z0-9_\-]", "_", name)
+        safe = re.sub(r"[^a-zA-Z0-9_\-]", "_", name)
+        # Truncate and add hash for uniqueness if long (prevents Mermaid ID overflow)
+        if len(safe) > 60:
+            import hashlib
+            h = hashlib.md5(name.encode()).hexdigest()[:6]
+            return f"{safe[:50]}_{h}"
+        return safe
+    def _sanitize_for_table(self, text: str) -> str:
+        """Sanitizes text for use in a markdown table cell."""
+        if not text: return "—"
+        # Replace newlines with <br>, escape pipes
+        s = str(text).replace("\n", "<br>").replace("|", "\\|")
+        return s
 
+
+    def _get_semantic_state_label(self, state: str) -> str:
+        """Translates technical/raw states into semantic labels with strict truncation."""
+        if not state: return "unknown"
+        
+        # 1. Handle synthesized calls from dataflow
+        if state.startswith("[include]"):
+            path = state.replace("[include]", "").strip()
+            # Clean up complex PHP concats
+            path = re.sub(r"\s*\.\s*", " + ", path)
+            return f"Include: {path[:70]}..." if len(path) > 70 else f"Include: {path}"
+        if state.startswith("[require]"):
+            path = state.replace("[require]", "").strip()
+            path = re.sub(r"\s*\.\s*", " + ", path)
+            return f"Require: {path[:70]}..." if len(path) > 70 else f"Require: {path}"
+            
+        # 2. Handle common sinks
+        sinks = {
+            "echo": "Render Output",
+            "print": "Log/Display",
+            "die": "Terminate",
+            "header": "HTTP Redirect",
+            "mysqli_query": "DB Query",
+            "mysqli_prepare": "DB Prepare",
+            "eval": "🚨 DANGEROUS: Dynamic Eval",
+            "exec": "🚨 DANGEROUS: System Exec",
+            "system": "🚨 DANGEROUS: System Call",
+            "shell_exec": "🚨 DANGEROUS: Shell Exec"
+        }
+        
+        for sink, label in sinks.items():
+            if state.startswith(f"[{sink}]"):
+                content = state.replace(f"[{sink}]", "").strip()
+                return f"{label}: {content[:60]}..." if len(content) > 60 else f"{label}: {content}"
+            if state == sink:
+                return label
+
+        # 3. Default: clean up long paths for display
+        return state.split("/")[-1] if "/" in state else state
     def _safe_path(self, subdir: str, filename: str) -> str:
         """Sanitize path and ensure it's inside the vault."""
         target = os.path.abspath(os.path.join(self.vault_path, subdir, filename))
@@ -386,21 +437,49 @@ class LibrarianEngine:
         states: set = {entrypoint_func}
         transitions = []
         visited: set = {entrypoint_func}
-        queue = [(c, entrypoint_func, 1) for c in callees_from_map]
+        queue = []
+        for c in callees_from_map:
+            queue.append((c, entrypoint_func, 1, None))
         
         while queue:
             if len(states) >= max_states:
                 break
-            current, parent, depth = queue.pop(0)
+            current, parent, depth, synth_label = queue.pop(0)
             states.add(current)
-            label = self._make_transition_label(parent, current, funcs, sym_meta)
+            
+            label = synth_label or self._make_transition_label(parent, current, funcs, sym_meta)
             transitions.append({"from": parent, "to": current, "condition": label or None})
+            
             if depth < max_depth and current not in visited:
                 visited.add(current)
-                next_callees = calls_map.get(current, {}).get("callees", [])
+                next_callees = list(calls_map.get(current, {}).get("callees", []))
+                
+                # 1. Normal callees
                 for nc in next_callees:
                     if nc not in visited:
-                        queue.append((nc, current, depth + 1))
+                        queue.append((nc, current, depth + 1, None))
+
+                # 2. Inject synthesized calls from dataflow (e.g. includes/requires)
+                current_obj = next((f for f in funcs if f.get("name") == current), None)
+                if current_obj and "dataflow" in current_obj:
+                    for flow in current_obj["dataflow"]:
+                        if flow.get("type") in ("synthesized_call", "sink"):
+                            if flow.get("type") == "synthesized_call":
+                                hint = flow.get("resolved_hint") or flow.get("raw_path")
+                                verb = flow.get("verb", "call")
+                                synth_name = f"[{verb}] {hint}"
+                            else:
+                                # It's a sink
+                                sink_name = flow.get("sink")
+                                args = flow.get("args", "")
+                                synth_name = f"[{sink_name}] {args}"
+                            
+                            # Capture constraints for transition label
+                            constraints = flow.get("constraints", [])
+                            label = ", ".join(constraints) if constraints else None
+                            
+                            if synth_name not in visited:
+                                queue.append((synth_name, current, depth + 1, label))
 
         built_state_meta = {}
         for s in states:
@@ -408,16 +487,38 @@ class LibrarianEngine:
             if not meta:
                 f_match = next((f for f in funcs if f.get("name") == s), None)
                 if f_match:
+                    # Determine archetype from file path or name
+                    f_file = f_match.get("file", "").lower()
+                    arch = "generic"
+                    if "security" in f_file or "auth" in f_file or "guard" in f_file:
+                        arch = "security-guard"
+                    elif "api" in f_file or "controller" in f_file:
+                        arch = "api-endpoint"
+                    elif "db" in f_file or "model" in f_file or "repository" in f_file:
+                        arch = "data-repository"
+                    elif "util" in f_file or "helper" in f_file:
+                        arch = "utility"
+                    
                     meta = {
                         "params": f_match.get("params", []),
                         "returns": f_match.get("returns", {}),
                         "docstring": f_match.get("docstring", ""),
                         "potential_energy": 0.0,
-                        "archetype": "generic",
+                        "archetype": arch,
                         "variable_states": f_match.get("variable_states", {}),
                         "flow_paths": f_match.get("flow_paths", [])
                     }
-            built_state_meta[s] = meta or {"params": [], "returns": {}, "docstring": "", "variable_states": {}, "flow_paths": []}
+            
+            if s.startswith("["):
+                # Synthesized state
+                if "include" in s or "require" in s:
+                    meta = meta or {}
+                    meta["archetype"] = "dynamic-include"
+                else:
+                    meta = meta or {}
+                    meta["archetype"] = "data-sink"
+            
+            built_state_meta[s] = meta or {"params": [], "returns": {}, "docstring": "", "variable_states": {}, "flow_paths": [], "archetype": "unknown"}
 
         is_hub = built_state_meta.get(entrypoint_func, {}).get("archetype") == "system-hub"
 
@@ -470,7 +571,7 @@ class LibrarianEngine:
                 alias = self._get_safe_filename(s)
                 if not is_macro:
                     # Replace double quotes with single quotes to avoid breaking Mermaid string syntax
-                    safe_s = s.replace('"', "'")
+                    safe_s = self._get_semantic_state_label(s).replace('"', "'")
                     if alias == safe_s:
                         f.write(f"    {safe_s}\n")
                     else:
@@ -508,7 +609,7 @@ class LibrarianEngine:
                 for v, vdata in v_states.items():
                     if isinstance(vdata, dict) and vdata.get("constraints"):
                         invariants.extend(vdata["constraints"])
-                invariants_str = "<br>".join(list(set(invariants))[:3]) if invariants else "—"
+                invariants_str = "<br>".join([self._sanitize_for_table(x) for x in list(set(invariants))[:3]]) if invariants else "—"
                 p = s_meta.get("params", [])
                 params_str = ", ".join([str(x) for x in p]) if p else "—"
                 r = s_meta.get("returns", "—")
@@ -568,7 +669,7 @@ class LibrarianEngine:
                     state = info["state"]
                     vtype = info["type"]
                     constraints = info["constraints"]
-                    constraints_str = ", ".join(constraints) if constraints else "—"
+                    constraints_str = ", ".join([self._sanitize_for_table(x) for x in constraints]) if constraints else "—"
                     f.write(f"| `{var_name}` | `{state}` | {vtype} | {constraints_str} |\n")
                 f.write("\n")
                 

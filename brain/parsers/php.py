@@ -63,40 +63,78 @@ def extract_dataflow(code_snippet: str) -> List[Dict[str, Any]]:
     dataflow = []
     
     # 1. Globals Detection
-    for var_name in re.findall(r"\$_(SESSION|COOKIE|GET|POST|REQUEST|SERVER|FILES)\[['\"](\w+)['\"]\]", code_snippet):
+    for match in re.finditer(r"\$_(SESSION|COOKIE|GET|POST|REQUEST|SERVER|FILES)\[['\"](\w+)['\"]\]", code_snippet):
         dataflow.append({
             "type": "global_state",
-            "variable": f"$_{var_name[0]}['{var_name[1]}']",
-            "source": f"$_{var_name[0]}"
+            "variable": f"$_{match.group(1)}['{match.group(2)}']",
+            "source": f"_{match.group(1)}",
+            "pos": match.start()
         })
 
     # 2. Assignments
     # Supports $var, $obj->prop, $arr['key']
-    assign_pattern = re.compile(r"(\$[\w\->\[\]'\" ]+)\s*([\.\+\-\*\/]?=)\s*([^;]+);")
+    assign_pattern = re.compile(r"(?<!['\"\w\$])(\$[\w\->\[\]'\" ]+)\s*([\.\+\-\*\/]?=)\s*([^;]+);")
     for match in assign_pattern.finditer(code_snippet):
         dataflow.append({
             "type": "assignment",
             "variable": match.group(1).strip(),
             "operation": match.group(2),
-            "value": match.group(3).strip()
+            "value": match.group(3).strip(),
+            "pos": match.start()
         })
-    
-    # 3. Dynamic Includes (Synthesized Dependencies)
-    include_pattern = re.compile(r"\b(include|require)(_once)?\b\s*\(?([^;]+)\)?\s*;", re.IGNORECASE)
+    include_pattern = re.compile(r"(?<!['\"\w\$])\b(include|require)(_once)?\b\s*\(?(['\"].*?['\"]|[^;]{1,100})\)?\s*;", re.IGNORECASE)
     for match in include_pattern.finditer(code_snippet):
+        path = match.group(3).strip()
+        # Heuristics to avoid capturing text as paths
+        if any(x in path for x in ["<", ">", "\n", "  "]) or len(path) < 2:
+            continue
         dataflow.append({
             "type": "synthesized_call",
             "verb": match.group(1),
-            "raw_path": match.group(3).strip()
+            "raw_path": path,
+            "pos": match.start()
         })
 
     # 4. Sinks
-    sink_pattern = re.compile(r"\b(echo|print|query|die|header|setcookie|mysqli_query|mysqli_prepare|eval|exec|system|shell_exec)\b\s*\(?([^;)]+)\)?\s*;")
+    sink_pattern = re.compile(r"(?<!['\"\w\$])\b(echo|print|query|die|header|setcookie|mysqli_query|mysqli_prepare|eval|exec|system|shell_exec)\b\s*\(?([^;)]{1,200})\)?\s*;")
     for match in sink_pattern.finditer(code_snippet):
+        args = match.group(2).strip()
+        if len(args) > 200 or "\n" in args:
+             args = args[:197] + "..."
         dataflow.append({
             "type": "sink",
             "sink": match.group(1),
-            "args": match.group(2).strip()
+            "args": args,
+            "pos": match.start()
         })
+
+    # 5. Config & UI Transitions (SURFACE CRITICAL ASSIGNMENTS)
+    critical_vars = ["$headerCSP", "$page['body']", "$html", "$PHPUploadPath"]
+    for match in assign_pattern.finditer(code_snippet):
+        var = match.group(1).strip()
+        val = match.group(3).strip()
+        if any(cv in var for buf in critical_vars for cv in [buf]):
+            # Add as a synthesized call to make it a state in the map
+            label = val.replace("\n", " ")
+            if len(label) > 100: label = label[:97] + "..."
+            dataflow.append({
+                "type": "synthesized_call",
+                "verb": "Set " + var.replace("$", ""),
+                "raw_path": label,
+                "pos": match.start()
+            })
+
+    # 5. Conditions (Decision Points)
+    cond_pattern = re.compile(r"\b(if|elseif|else if|case)\b\s*\(?([^){:]+)\)?")
+    for match in cond_pattern.finditer(code_snippet):
+        dataflow.append({
+            "type": "condition",
+            "verb": match.group(1),
+            "content": match.group(2).strip(),
+            "pos": match.start()
+        })
+
+    # Sort by position to maintain order
+    dataflow.sort(key=lambda x: x.get("pos", 0))
         
     return dataflow

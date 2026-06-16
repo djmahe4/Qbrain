@@ -4,6 +4,7 @@ import time
 import json
 from unittest.mock import MagicMock, patch
 from brain.librarian import LibrarianEngine
+import brain.cli
 
 def test_librarian_creates_folders(tmp_path):
     vault_path = tmp_path / "obsidian_vault"
@@ -209,7 +210,7 @@ def test_librarian_exports_behavior_with_dataflow_and_variables(tmp_path):
     assert "Parse error" not in content
     assert 'state "[require] DVWA_WEB_PAGE_TO_ROOT . "vulnerabilities' not in content
     # Should be replaced by single quotes:
-    assert "state \"[require] DVWA_WEB_PAGE_TO_ROOT . 'vulnerabilities/javascript/source/{{$vulnerabilityFile}}'\" as" in content
+    assert "state \"Require: DVWA_WEB_PAGE_TO_ROOT + 'vulnerabilities/javascript/source/{{$vulnerab...\" as _require__DVWA_WEB_PAGE_TO_ROOT____vulnerabilities_" in content
 
     # Verify Dynamic Variable Tracking section is present
     assert "## Dynamic Variable Tracking" in content

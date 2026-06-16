@@ -276,17 +276,17 @@ class QuantumScorer:
             # Combined score
             fi.business_score = 0.7 * pe_score + 0.3 * cent_score
 
-            # Quantum collapse state
+            # Technical Archetype Assignment (Replacing Quantum metaphors)
             if fi.business_score >= self.config.business_collapse_threshold:
-                # Heuristic for system-hub: high centrality and significant complexity
+                # High centrality and significant complexity in business context
                 if cent_score > 0.6 and fi.mass > 2.5:
                     fi.quantum_state = "system-hub"
                 else:
-                    fi.quantum_state = "collapsed_business"
+                    fi.quantum_state = "core-logic"
             elif fi.business_score <= 0.25:
-                fi.quantum_state = "collapsed_utility"
+                fi.quantum_state = "utility"
             else:
-                fi.quantum_state = "collapsed_neutral"
+                fi.quantum_state = "standard-module"
 
     def write_physics_to_graph(self, functions: List[FunctionNode]):
         """

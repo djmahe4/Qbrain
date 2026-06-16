@@ -105,7 +105,7 @@ def test_stress_quantum_scorer_performance_bh():
     # Check that scores were generated successfully
     for n in nodes:
         assert 0.0 <= n.business_score <= 1.0
-        assert n.quantum_state in ("collapsed_business", "collapsed_utility", "collapsed_neutral", "system-hub")
+        assert n.quantum_state in ("core-logic", "utility", "standard-module", "system-hub")
 
 def test_stress_quantum_scorer_dense_positions():
     config = Config()

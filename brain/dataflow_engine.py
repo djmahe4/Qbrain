@@ -67,13 +67,23 @@ class DataFlowEngine:
         ]
         for cp in cond_patterns:
             for match in re.finditer(cp, code, re.DOTALL):
-                condition = match.group(1).strip()
+                condition = match.group(1).strip().replace("\n", " ")
+                if len(condition) > 100: condition = condition[:97] + "..."
                 for var_in_cond in re.findall(r"\$[\w\->]+", condition):
                     constraints_map.setdefault(var_in_cond, []).append(condition)
 
         # 3. Process Atoms
+        active_constraints = []
         for atom in raw_atoms:
             a_type = atom.get("type")
+            
+            if a_type == "condition":
+                # Shallow window for contextual constraints
+                cond_content = atom["content"].replace("\n", " ")
+                if len(cond_content) > 100: cond_content = cond_content[:97] + "..."
+                active_constraints.append(cond_content)
+                if len(active_constraints) > 2:
+                    active_constraints.pop(0)
             
             if a_type == "global_state":
                 var = atom["variable"]
@@ -82,7 +92,7 @@ class DataFlowEngine:
                     "type": "dynamic",
                     "source": atom["source"],
                     "properties": {},
-                    "constraints": constraints_map.get(var, [])
+                    "constraints": list(set(constraints_map.get(var, []) + active_constraints))
                 }
             
             elif a_type == "assignment":
@@ -107,7 +117,7 @@ class DataFlowEngine:
                         "type": "unknown",
                         "source": "internal",
                         "properties": {},
-                        "constraints": constraints_map.get(base_var, [])
+                        "constraints": list(set(constraints_map.get(base_var, []) + active_constraints))
                     }
 
                 inferred_type = self._infer_type(val_raw)
@@ -168,7 +178,8 @@ class DataFlowEngine:
                 synthesized_calls.append({
                     "verb": atom["verb"],
                     "raw_path": raw_path,
-                    "resolved_hint": resolved_hint
+                    "resolved_hint": resolved_hint,
+                    "constraints": list(active_constraints)
                 })
 
             elif a_type == "sink":
