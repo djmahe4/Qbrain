@@ -59,39 +59,49 @@ class DataFlowEngine:
             raw_atoms = php.extract_dataflow(code)
         
         # 2. Extract Constraints (Conditions) - still generic for now
-        constraints_map = {} 
-        cond_patterns = [
-            r"if\s*\((.*?)\)",
-            r"case\s*(.*?):",
-            r"while\s*\((.*?)\)"
-        ]
-        for cp in cond_patterns:
-            for match in re.finditer(cp, code, re.DOTALL):
-                condition = match.group(1).strip().replace("\n", " ")
-                if len(condition) > 100: condition = condition[:97] + "..."
-                for var_in_cond in re.findall(r"\$[\w\->]+", condition):
-                    constraints_map.setdefault(var_in_cond, []).append(condition)
+        # 2. Constraints mapping is now handled via block scope tracking in Step 3
+        constraints_map = {} # Legacy, keeping for backwards compatibility if needed elsewhere
 
         # 3. Process Atoms
         active_constraints = []
+        constraint_stack = []
+        last_cond = None
+        
         for atom in raw_atoms:
             a_type = atom.get("type")
             
             if a_type == "condition":
-                # Shallow window for contextual constraints
-                cond_content = atom["content"].replace("\n", " ")
-                if len(cond_content) > 100: cond_content = cond_content[:97] + "..."
-                active_constraints.append(cond_content)
-                if len(active_constraints) > 2:
-                    active_constraints.pop(0)
+                # Filter out pure loop conditions from the "environmental invariants" stack
+                is_loop = atom.get("verb") in ("for", "foreach")
+                cond_content = atom["content"]
+                if len(cond_content) > 200: cond_content = cond_content[:197] + "..."
+                
+                # We still want 'while' as it's often a security check
+                if not is_loop:
+                    last_cond = cond_content
+                
+                if not last_cond and atom["verb"] == "else":
+                    last_cond = "else branch"
             
+            elif a_type == "delimiter":
+                if atom["value"] == "{":
+                    if last_cond:
+                        constraint_stack.append(last_cond)
+                        last_cond = None
+                elif atom["value"] == "}":
+                    if constraint_stack:
+                        constraint_stack.pop()
+            
+            active_constraints = list(set(constraint_stack))
+            if last_cond and not constraint_stack: # Handle single-line if
+                 active_constraints.append(last_cond)
+
             if a_type == "global_state":
                 var = atom["variable"]
                 var_states[var] = {
                     "state": "GLOBAL_STATE",
                     "type": "dynamic",
                     "source": atom["source"],
-                    "properties": {},
                     "constraints": list(set(constraints_map.get(var, []) + active_constraints))
                 }
             

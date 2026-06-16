@@ -108,33 +108,31 @@ def extract_dataflow(code_snippet: str) -> List[Dict[str, Any]]:
             "pos": match.start()
         })
 
-    # 5. Config & UI Transitions (SURFACE CRITICAL ASSIGNMENTS)
-    critical_vars = ["$headerCSP", "$page['body']", "$html", "$PHPUploadPath"]
-    for match in assign_pattern.finditer(code_snippet):
-        var = match.group(1).strip()
-        val = match.group(3).strip()
-        if any(cv in var for buf in critical_vars for cv in [buf]):
-            # Add as a synthesized call to make it a state in the map
-            label = val.replace("\n", " ")
-            if len(label) > 100: label = label[:97] + "..."
-            dataflow.append({
-                "type": "synthesized_call",
-                "verb": "Set " + var.replace("$", ""),
-                "raw_path": label,
-                "pos": match.start()
-            })
-
-    # 5. Conditions (Decision Points)
-    cond_pattern = re.compile(r"\b(if|elseif|else if|case)\b\s*\(?([^){:]+)\)?")
+    # 6. Conditions & Loops (Decision Points)
+    # Uses a wider capture for conditions to handle nested parentheses (common in security logic)
+    cond_pattern = re.compile(r"\b(if|elseif|else if|else|case|for|while|foreach)\b(?:\s*\(?([^{:]+))?")
     for match in cond_pattern.finditer(code_snippet):
+        verb = match.group(1)
+        content = match.group(2).strip() if match.group(2) else ""
+        
+        # Cleanup: remove trailing paren if we captured everything up to a '{'
+        if content.endswith(')'):
+            content = content[:-1].strip()
+            
         dataflow.append({
             "type": "condition",
-            "verb": match.group(1),
-            "content": match.group(2).strip(),
+            "verb": verb,
+            "content": content,
             "pos": match.start()
         })
 
-    # Sort by position to maintain order
+    # 7. Block Delimiters
+    for match in re.finditer(r"[{}]", code_snippet):
+        dataflow.append({
+            "type": "delimiter",
+            "value": match.group(0),
+            "pos": match.start()
+        })
     dataflow.sort(key=lambda x: x.get("pos", 0))
         
     return dataflow
