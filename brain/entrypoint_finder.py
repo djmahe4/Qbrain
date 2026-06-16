@@ -6,7 +6,10 @@ from typing import Dict, List
 try:
     import tomllib  # Python 3.11+
 except ImportError:
-    import tomllib
+    try:
+        import tomli as tomllib  # pip install tomli
+    except ImportError:
+        tomllib = None  # pyproject.toml parsing disabled gracefully
 
 try:
     import yaml

@@ -35,17 +35,8 @@ def test_write_physics_to_graph_batching():
     scorer.run_simulation(funcs, iterations=1)
     scorer.write_physics_to_graph(funcs)
 
-    # We expect 1 query call for nodes (batch size 20 > 3 funcs)
-    assert len(indexer.queries) >= 1
-    
-    # Check that query contains update statement elements
-    combined_queries = " ".join(indexer.queries)
-    assert "Function" in combined_queries
-    assert "mass" in combined_queries
-    assert "potential_energy" in combined_queries
-    assert "f1" in combined_queries
-    assert "f2" in combined_queries
-    assert "f3" in combined_queries
+    # We expect calls to persist_physics on the persistence mock
+    assert indexer.persistence.persist_physics.call_count == 3
 
 def test_simulation_stress_1000_nodes():
     from brain.config import Config

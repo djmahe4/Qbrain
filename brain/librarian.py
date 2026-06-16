@@ -17,16 +17,36 @@ class LibrarianEngine:
     def __init__(self, repo_path: str, vault_path: str):
         self.repo_path = os.path.abspath(repo_path)
         self.vault_path = os.path.abspath(vault_path)
-        self.lock_file = os.path.join(self.vault_path, ".qbrain.lock")
+        os.makedirs(self.vault_path, exist_ok=True)
+        self.lock_file = os.path.join(self.repo_path, ".qbrain.lock")
 
     @contextmanager
-    def lock(self):
+    def lock(self, timeout: float = 30.0, retry_interval: float = 1.0):
         """PID-based file locking to prevent concurrent vault updates."""
         if not os.path.exists(self.vault_path):
             os.makedirs(self.vault_path, exist_ok=True)
             
-        retry_count = 0
-        while retry_count < 30:
+        # Fail fast if lock file exists and is owned by the current process
+        if os.path.exists(self.lock_file):
+            try:
+                with open(self.lock_file, "r") as f:
+                    raw = f.read().strip()
+                    if raw:
+                        try:
+                            data = json.loads(raw)
+                            lock_pid = data.get("pid")
+                        except json.JSONDecodeError:
+                            lock_pid = int(raw)
+                        if lock_pid == os.getpid():
+                            raise RuntimeError("Failed to acquire lock: locked by a running process")
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
+
+        start_time = time.time()
+        acquired = False
+        while time.time() - start_time < timeout:
             try:
                 # Try to create lock file atomically
                 with open(self.lock_file, "x") as f:
@@ -35,17 +55,17 @@ class LibrarianEngine:
                         "create_time": time.time()
                     }
                     f.write(json.dumps(lock_data))
+                acquired = True
                 break
             except FileExistsError:
                 # Check if lock is stale
                 if self._is_lock_stale():
                     self._force_release_lock()
                     continue
-                time.sleep(1)
-                retry_count += 1
+                time.sleep(retry_interval)
         
-        if retry_count >= 30:
-            raise RuntimeError(f"Could not acquire vault lock at {self.lock_file} after 30 seconds.")
+        if not acquired:
+            raise RuntimeError("Failed to acquire lock: locked by a running process")
             
         try:
             yield
@@ -58,28 +78,51 @@ class LibrarianEngine:
         try:
             with open(self.lock_file, "r") as f:
                 raw = f.read().strip()
-                if not raw: return True
+                if not raw:
+                    return True
+                
+                pid = None
                 try:
                     data = json.loads(raw)
-                    pid = data.get("pid")
-                except json.JSONDecodeError:
-                    pid = int(raw)
+                    if isinstance(data, dict):
+                        pid = data.get("pid")
+                except Exception:
+                    pass
+                
+                if pid is None:
+                    try:
+                        pid = int(raw)
+                    except ValueError:
+                        return True  # Invalid PID format, treat as stale
+            
+            if pid == os.getpid():
+                return False  # Current process is active, not stale
             
             if os.name == "nt":
-                try:
-                    out = subprocess.check_output(
-                        ["tasklist", "/FI", f"PID eq {pid}"], 
-                        creationflags=subprocess.CREATE_NO_WINDOW
-                    )
-                    return b"No tasks are running" in out
-                except Exception:
-                    return True
+                import ctypes
+                PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+                kernel32 = ctypes.windll.kernel32
+                kernel32.OpenProcess.restype = ctypes.c_void_p
+                handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+                if handle:
+                    kernel32.CloseHandle(ctypes.c_void_p(handle))
+                    return False  # process is running, lock is not stale
+                err = kernel32.GetLastError()
+                if err == 5:  # Access Denied means running
+                    return False
+                return True   # not running, stale
             else:
                 try:
                     os.kill(pid, 0)
-                    return False
-                except OSError:
-                    return True
+                    return False  # process is running, lock is not stale
+                except OSError as e:
+                    import errno
+                    if e.errno == errno.ESRCH:
+                        return True
+                    return False  # e.g. permission error means process is running
+        except PermissionError:
+            # If locked/busy, the process is active, lock is NOT stale
+            return False
         except Exception:
             return True
 
@@ -92,44 +135,72 @@ class LibrarianEngine:
 
     def setup_vault(self):
         """Create standard vault directories."""
-        dirs = ["symbols", "files", "behaviors", "changes", "rules", "narratives"]
+        dirs = [
+            "symbols", "files", "behaviors", "changes", "changes/recent",
+            "changes/archive", "rules", "narratives"
+        ]
         for d in dirs:
             os.makedirs(os.path.join(self.vault_path, d), exist_ok=True)
+        baseline_path = os.path.join(self.vault_path, "baseline.md")
+        if not os.path.exists(baseline_path):
+            with open(baseline_path, "w", encoding="utf-8") as f:
+                f.write("# Qbrain Baseline\n")
 
     def _get_safe_filename(self, name: str) -> str:
         """Standardized safe naming for all exported entities."""
-        return re.sub(r"[^a-zA-Z0-9_]", "_", name)
+        return re.sub(r"[^a-zA-Z0-9_\-]", "_", name)
 
     def _safe_path(self, subdir: str, filename: str) -> str:
         """Sanitize path and ensure it's inside the vault."""
         target = os.path.abspath(os.path.join(self.vault_path, subdir, filename))
         if not target.startswith(self.vault_path):
-            raise ValueError(f"Path traversal detected: {target}")
+            raise ValueError(f"Path traversal detected (Security Risk): {target}")
         return target
 
     def export_symbol(self, symbol_data: dict):
         name = symbol_data.get("name")
         if not name:
             return
+        if ".." in name or name.startswith("/") or name.startswith("\\"):
+            raise ValueError("Path traversal detected (Security Risk) in symbol name")
         safe_name = self._get_safe_filename(name)
         filepath = self._safe_path("symbols", f"{safe_name}.md")
+        kind = symbol_data.get("kind", "Function")
         
         frontmatter = {
             "type": "symbol",
+            "kind": kind,
             "name": name,
             "language": symbol_data.get("language"),
             "file": symbol_data.get("file"),
             "signature": symbol_data.get("signature"),
             "mass": symbol_data.get("mass"),
             "potential_energy": symbol_data.get("potential_energy"),
-            "archetype": symbol_data.get("archetype")
+            "archetype": symbol_data.get("archetype"),
+            "line": symbol_data.get("line"),
+            "line_range": symbol_data.get("line_range")
         }
         
+        # Determine header badge
+        badge = "🔧"
+        if kind == "Class":
+            badge = "🏛️"
+        elif kind == "Interface":
+            badge = "📑"
+        elif kind == "Enum":
+            badge = "🗳️"
+        elif kind == "Variable":
+            badge = "📌"
+        elif kind == "Module":
+            badge = "📦"
+        elif kind == "Method":
+            badge = "⚡"
+
         with open(filepath, "w", encoding="utf-8") as f:
             f.write("---\n")
             yaml.safe_dump(frontmatter, f, default_flow_style=False)
             f.write("---\n\n")
-            f.write(f"# Symbol: {name}\n\n")
+            f.write(f"# {badge} {kind}: {name}\n\n")
             if symbol_data.get("line") is not None:
                 f.write(f"**Line:** {symbol_data.get('line')}\n\n")
             if symbol_data.get("docstring"):
@@ -469,57 +540,68 @@ class LibrarianEngine:
                 if count > 20: break
 
     def export_warnings(self, warnings: List[dict]):
-        filepath = os.path.join(self.vault_path, "rules", "warnings.md")
+        filepath = self._safe_path("rules", "warnings.md")
         with open(filepath, "w", encoding="utf-8") as f:
-            f.write("# ⚠️ Code Quality & Docstring Warnings\n\n")
+            f.write("# Docstring & Quality Invariants Warnings\n\n")
             f.write("| Symbol | File | Warnings |\n")
             f.write("|:---|:---|:---|\n")
             for w in warnings:
                 f.write(f"| `[[{w['name']}]]` | {w['file']} | {', '.join(w['warnings'])} |\n")
 
     def export_vulnerabilities(self, vulns: List[dict]):
-        filepath = os.path.join(self.vault_path, "rules", "vulnerabilities.md")
+        filepath = self._safe_path("rules", "vulnerabilities.md")
         with open(filepath, "w", encoding="utf-8") as f:
-            f.write("# 🛡️ Security Vulnerabilities (CWE)\n\n")
-            f.write("| CWE | Severity | Function | Description |\n")
+            f.write("# 🛡️ Codebase Security Vulnerabilities\n\n")
+            f.write("| Severity | Symbol | File | Finding |\n")
             f.write("|:---|:---|:---|:---|\n")
             for v in vulns:
-                # Use safe_link for Obsidian compatibility
-                safe_link = v.get("safe_link") or self._get_safe_filename(v.get("function", "unknown"))
-                f.write(f"| {v['cwe']} | **{v['severity']}** | `[[{safe_link}]]` | {v['description'] or v.get('message')} |\n")
+                severity = v.get("severity", "LOW")
+                name = v.get("name") or v.get("function") or "unknown"
+                safe_link = v.get("safe_link") or self._get_safe_filename(name)
+                file_path = v.get("file") or "unknown"
+                finding = v.get("message") or v.get("description") or "unknown"
+                f.write(f"| {severity} | `[[{safe_link}]]` | {file_path} | {finding} |\n")
 
     def export_hotspots(self, hotspots: dict):
-        filepath = os.path.join(self.vault_path, "rules", "hotspots.md")
+        filepath = self._safe_path("rules", "hotspots.md")
         with open(filepath, "w", encoding="utf-8") as f:
-            f.write("# ⚡ Cognitive Hotspots\n\n")
-            f.write("## Complexity Hotspots (High Mass)\n")
+            f.write("# 📊 Codebase Cognitive & Complexity Hotspots\n\n")
+            f.write("## 🏋️ Complexity Hotspots (Highest Mass)\n")
+            f.write("| Symbol | File | Mass | Archetype |\n")
+            f.write("|:---|:---|:---|:---|\n")
             for h in hotspots.get("complexity", []):
-                f.write(f"- `[[{h['name']}]]` (Mass: {h['mass']:.2f}, Type: {h['archetype']})\n")
-            f.write("\n## Attention Hotspots (High PE)\n")
+                f.write(f"| `[[{h['name']}]]` | {h.get('file', 'unknown')} | {h['mass']:.1f} | {h.get('archetype', '—')} |\n")
+            
+            f.write("\n## ⚡ Attention Hotspots (Highest Drift / Attention Debt)\n")
+            f.write("| Symbol | File | Potential Energy | Archetype |\n")
+            f.write("|:---|:---|:---|:---|\n")
             for h in hotspots.get("attention", []):
-                f.write(f"- `[[{h['name']}]]` (PE: {h['potential_energy']:.2f}, Type: {h['archetype']})\n")
+                f.write(f"| `[[{h['name']}]]` | {h.get('file', 'unknown')} | {h['potential_energy']:.2f} | {h.get('archetype', '—')} |\n")
 
     def export_archetypes(self, groups: dict):
-        filepath = os.path.join(self.vault_path, "rules", "archetypes.md")
+        filepath = self._safe_path("rules", "archetypes.md")
         with open(filepath, "w", encoding="utf-8") as f:
-            f.write("# 🧩 Semantic Archetypes\n\n")
+            f.write("# 🧩 Codebase Semantic Archetypes\n\n")
             for arch, symbols in groups.items():
+                title_arch = "-".join([w.capitalize() for w in arch.split("-")])
                 safe_arch = self._get_safe_filename(arch)
-                f.write(f"## {arch} (Narrative: [[archetype_{safe_arch}]])\n")
+                f.write(f"## {title_arch} (Narrative: [[archetype_{safe_arch}]])\n")
                 for s in symbols[:15]:
-                    f.write(f"- `[[{s['name']}]]` (Confidence: {s['confidence']:.2%})\n")
+                    confidence_str = f" (Confidence: {s['confidence']:.2%})" if 'confidence' in s else ""
+                    f.write(f"- `[[{s['name']}]]`{confidence_str}\n")
                 f.write("\n")
 
     def export_branch_diff(self, diff: dict):
-        filepath = os.path.join(self.vault_path, "changes", "branch_diff.md")
+        filepath = self._safe_path("changes", "branch_diff.md")
         with open(filepath, "w", encoding="utf-8") as f:
-            f.write(f"# 🌿 Git Branch Diff: {diff.get('branch_x')} vs {diff.get('branch_y')}\n\n")
-            f.write("## Added Files\n")
-            for fl in diff.get("added_files", []):
-                f.write(f"- {fl}\n")
-            f.write("\n## Deleted Files\n")
-            for fl in diff.get("deleted_files", []):
-                f.write(f"- {fl}\n")
-            f.write("\n## Semantic Drift\n")
-            for sc in diff.get("semantic_changes", []):
-                f.write(f"- {sc['file']} (Distance: {sc['distance']:.3f})\n")
+            f.write("# 🌿 Branch Diff & Semantic Distance Report\n\n")
+            target = diff.get("target_branch") or "main"
+            f.write(f"**Comparing current workspace against:** `{target}`\n\n")
+            distance = diff.get("semantic_distance", 0.0)
+            f.write(f"**Semantic Distance:** `{distance}`\n\n")
+            
+            f.write("## 📝 Modified Files & Relevance Scores\n")
+            f.write("| File | Status | Churn | Relevance |\n")
+            f.write("|:---|:---|:---|:---|\n")
+            for fl in diff.get("files", []):
+                f.write(f"| {fl['file']} | {fl.get('status')} | {fl.get('churn')} | {fl.get('relevance_score')} |\n")

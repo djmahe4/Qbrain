@@ -38,8 +38,11 @@ _EXTENSION_MAP: Dict[str, str] = {
     ".h": "cpp",
     ".hpp": "cpp",
     ".cc": "cpp",
-    ".cc": "cpp",
     ".cxx": "cpp",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".toml": "toml",
+    ".json": "json",
 }
 
 
@@ -84,6 +87,8 @@ def extract_params(docstring: str, language: str) -> List[Dict[str, str]]:
         return rust.extract_params(docstring)
     elif lang == "cpp":
         return cpp.extract_params(docstring)
+    elif lang == "go":
+        return go.extract_params(docstring)
     return []
 
 def extract_returns(docstring: str, language: str) -> Dict[str, str]:
@@ -104,6 +109,8 @@ def extract_returns(docstring: str, language: str) -> Dict[str, str]:
         return rust.extract_returns(docstring)
     elif lang == "cpp":
         return cpp.extract_returns(docstring)
+    elif lang == "go":
+        return go.extract_returns(docstring)
     return {"type": "", "description": ""}
 
 def extract_business_rules(docstring: str, language: str) -> List[str]:
@@ -139,17 +146,22 @@ def build_genome(genome_dict: Dict[str, Any]) -> str:
     doc = genome_dict.get("docstring") or ""
     rules = genome_dict.get("business_rules") or []
 
-    parts = [name]
     if sig:
-        parts.append(f"({sig})")
+        if not sig.startswith("("):
+            sig = f"({sig})"
+    sig_part = sig if sig else ""
+
+    doc_part = ""
     if doc.strip():
         # Strip comment markers
         clean_doc = re.sub(r"[\*/]+", "", doc).strip()
-        parts.append(f"— {clean_doc}")
-    if rules:
-        parts.append("Rules: " + "; ".join(rules))
+        doc_part = f" — {clean_doc}"
 
-    return " ".join(parts)
+    rules_part = ""
+    if rules:
+        rules_part = " Rules: " + "; ".join(rules)
+
+    return f"{name}{sig_part}{doc_part}{rules_part}"
 
 
 # ─────────────────────────── LanguageParser class ───────────────────────────
@@ -166,6 +178,14 @@ class LanguageParser:
         code = record.get("code_snippet") or ""
         signature = record.get("signature") or ""
         file_path = record.get("file", "")
+        
+        symbol_kind = record.get("kind")
+        if not symbol_kind and "labels" in record:
+            labels = record.get("labels", [])
+            _kind_priority = ["Class", "Interface", "Enum", "Variable", "Method", "Function", "Module"]
+            symbol_kind = next((k for k in _kind_priority if k in labels), "Function")
+        if not symbol_kind:
+            symbol_kind = "Function"
 
         # --- New Architectural & Performance Checks ---
         # 1. Parameter count smell (5+ params in signature)
@@ -367,13 +387,14 @@ class LanguageParser:
             if '@lru_cache' in code_no_comments and 'maxsize=' not in code_no_comments:
                 warnings.append("Memory safety: @lru_cache used without explicit maxsize (defaults to 128, but explicit is better)")
         # 1. Naming Pattern (Verb-Noun)
-        verbs = {"get", "set", "calculate", "validate", "fetch", "parse", "process", 
-                 "run", "check", "update", "delete", "create", "load", "save", 
-                 "handle", "start", "stop", "is", "has", "should", "can", "extract", "write", "read"}
-        # Split camelCase or snake_case
-        words = re.sub('([A-Z])', r' \1', name).replace('_', ' ').lower().split()
-        if words and words[0] not in verbs:
-            warnings.append(f"Function naming does not follow verb-noun pattern (e.g. fetchMarketData). Got: {name}")
+        if symbol_kind not in ("Class", "Interface", "Enum", "Variable", "Module"):
+            verbs = {"get", "set", "calculate", "validate", "fetch", "parse", "process", 
+                     "run", "check", "update", "delete", "create", "load", "save", 
+                     "handle", "start", "stop", "is", "has", "should", "can", "extract", "write", "read"}
+            # Split camelCase or snake_case
+            words = re.sub('([A-Z])', r' \1', name).replace('_', ' ').lower().split()
+            if words and words[0] not in verbs:
+                warnings.append(f"Function naming does not follow verb-noun pattern (e.g. fetchMarketData). Got: {name}")
 
         clean_code = ""
         if code:

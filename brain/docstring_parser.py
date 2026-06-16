@@ -55,9 +55,7 @@ class DocstringParser:
         Uses multi-language parsing for richer genome construction.
         Backward-compatible: accepts raw MCP function dicts.
         """
-        return _build_genome_multilang(func) if (
-            func.get("business_rules") or func.get("params")
-        ) else _legacy_build_genome(func)
+        return _build_genome_multilang(func)
 
 
 def _legacy_build_genome(func: Dict[str, Any]) -> str:

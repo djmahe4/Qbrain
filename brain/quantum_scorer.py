@@ -234,9 +234,33 @@ class QuantumScorer:
                 fi.position[0] += fi.velocity[0] * self.dt
                 fi.position[1] += fi.velocity[1] * self.dt
 
-        # Post-simulation scoring
-        for fi in functions:
-            fi.potential_energy = self.potential_energy(fi, functions)
+        # Post-simulation scoring (Vectorized for performance)
+        import numpy as np
+        try:
+            embeddings = np.array([f.embedding for f in functions])
+            masses = np.array([f.mass for f in functions])
+            
+            # Normalize embeddings to be safe
+            norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+            norms[norms == 0] = 1e-5
+            norm_emb = embeddings / norms
+            
+            # Compute pairwise semantic distances (cosine distance)
+            similarity = np.dot(norm_emb, norm_emb.T)
+            d_sem = 1.0 - similarity
+            d_sem = np.clip(d_sem, 1e-5, None)
+            
+            # Compute potential energy
+            mass_products = np.outer(masses, masses)
+            energy_matrix = -self.G * mass_products / d_sem
+            np.fill_diagonal(energy_matrix, 0.0)
+            pe_sums = np.sum(energy_matrix, axis=1)
+            
+            for idx, fi in enumerate(functions):
+                fi.potential_energy = float(pe_sums[idx])
+        except Exception:
+            for fi in functions:
+                fi.potential_energy = self.potential_energy(fi, functions)
 
         energies = [abs(f.potential_energy) for f in functions]
         max_energy = max(energies) if energies and max(energies) > 0 else 1.0

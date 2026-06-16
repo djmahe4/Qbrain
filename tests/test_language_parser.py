@@ -276,3 +276,54 @@ def test_build_genome_includes_business_rules():
     assert len(result) > 10
     # Business rules should be part of the genome for embedding
     assert "owner" in result.lower() or "supply" in result.lower()
+
+
+def test_go_extract_params():
+    from brain.language_parser import extract_params
+    doc = """// myGoFunc does things.
+// @param name string name of the user
+// @param age int age of the user
+"""
+    params = extract_params(doc, "go")
+    assert len(params) == 2
+    assert params[0]["name"] == "name"
+    assert params[0]["type"] == "string"
+    assert params[0]["description"] == "name of the user"
+    assert params[1]["name"] == "age"
+    assert params[1]["type"] == "int"
+    assert params[1]["description"] == "age of the user"
+
+
+def test_go_extract_returns():
+    from brain.language_parser import extract_returns
+    doc = """// myGoFunc does things.
+// @return int status code
+"""
+    ret = extract_returns(doc, "go")
+    assert ret["type"] == "int"
+    assert ret["description"] == "status code"
+
+
+def test_parse_coding_standards_gates_naming_rules():
+    from brain.language_parser import LanguageParser
+    parser = LanguageParser()
+
+    # If it's a Class, verb-noun naming checks should be skipped
+    class_record = {
+        "name": "UserRepository",
+        "kind": "Class",
+        "code_snippet": "class UserRepository {}"
+    }
+    warnings = parser.parse_coding_standards(class_record)
+    assert not any("verb-noun" in w for w in warnings)
+
+    # If it's a Variable, verb-noun checks should be skipped
+    var_record = {
+        "name": "user_config",
+        "kind": "Variable",
+        "code_snippet": "const user_config = {}"
+    }
+    warnings = parser.parse_coding_standards(var_record)
+    assert not any("verb-noun" in w for w in warnings)
+
+

@@ -173,33 +173,6 @@ class BusinessLogicMapper:
             self.indexer.persistence.persist_belief(rule.source_function, belief_state, external=True)
 
         logger.info(f"Persisted {len(rules)} business logic rules via PersistenceManager.")
-
-        # 2. External Graph Write
-        merge_nodes: List[str] = []
-        merge_edges: List[str] = []
-
-    def write_rules_to_graph(self, rules: List[BusinessRule]) -> None:
-        """
-        Persist business logic rules to the internal mind (SQLite).
-        Graph writes (MERGE) are skipped as they are not supported by codebase-memory-mcp.
-        """
-        if not rules:
-            return
-            
-        # 1. Internal Write (Cognitive Persistence)
-        for rule in rules:
-            belief_state = {
-                "beliefs": {rule.category: rule.confidence},
-                "status": "ACTIVE" if rule.confidence > 0.8 else "SUPERPOSITION",
-                "winner": rule.category if rule.confidence > 0.8 else None,
-                "support_mass": rule.confidence
-            }
-            self.indexer.persistence.persist_belief(rule.source_function, belief_state, external=False)
-
-        logger.info(f"Persisted {len(rules)} business logic rules to the Internal Mind (SQLite).")
-
-        # Graph updates (MERGE/SET) are currently unsupported and cause failures.
-        # We rely on the Librarian to merge SQLite and Graph data during sync.
     def map_all(self, genomes: List[Dict[str, Any]]) -> List[BusinessRule]:
         """
         Process all genomes: extract rules and write them to the graph.
