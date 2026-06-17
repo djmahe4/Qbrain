@@ -160,7 +160,8 @@ class EntrypointFinder:
         FALLBACK_NAMES = [
             "main.cpp", "main.c", "main.go", "main.rs",
             "index.js", "index.ts", "app.py", "main.py","index.php",
-            "server.js", "server.ts", "index.jsx", "index.tsx"
+            "server.js", "server.ts", "index.jsx", "index.tsx",
+            "low.php", "medium.php", "high.php", "impossible.php"
         ]
 
         # Heuristic markers for entrypoints in non-standard files

@@ -96,11 +96,13 @@ def extract_dataflow(code_snippet: str) -> List[Dict[str, Any]]:
         })
 
     # 4. Sinks
-    sink_pattern = re.compile(r"(?<!['\"\w\$])\b(echo|print|query|die|header|setcookie|mysqli_query|mysqli_prepare|eval|exec|system|shell_exec)\b\s*\(?([^;)]{1,200})\)?\s*;")
+    sink_pattern = re.compile(r"(?<!['\"\w\$])\b(echo|print|query|die|header|setcookie|mysqli_query|mysqli_prepare|eval|exec|system|shell_exec)\b\s*\(?([^;)]{1,200})\)?")
     for match in sink_pattern.finditer(code_snippet):
         args = match.group(2).strip()
-        if len(args) > 200 or "\n" in args:
-             args = args[:197] + "..."
+        if len(args) > 50:
+             args = args[:47] + "..."
+        # Clean up HTML and long strings in args
+        args = re.sub(r'["\'].*?["\']', '"..."', args)
         dataflow.append({
             "type": "sink",
             "sink": match.group(1),
@@ -110,7 +112,7 @@ def extract_dataflow(code_snippet: str) -> List[Dict[str, Any]]:
 
     # 6. Conditions & Loops (Decision Points)
     # Uses a wider capture for conditions to handle nested parentheses (common in security logic)
-    cond_pattern = re.compile(r"\b(if|elseif|else if|else|case|for|while|foreach)\b(?:\s*\(?([^{:]+))?")
+    cond_pattern = re.compile(r"\b(if|elseif|else if|else|switch|case|for|while|foreach)\b(?:\s*\(?([^{:]+))?")
     for match in cond_pattern.finditer(code_snippet):
         verb = match.group(1)
         content = match.group(2).strip() if match.group(2) else ""

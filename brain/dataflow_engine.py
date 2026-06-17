@@ -93,7 +93,7 @@ class DataFlowEngine:
                         constraint_stack.pop()
             
             active_constraints = list(set(constraint_stack))
-            if last_cond and not constraint_stack: # Handle single-line if
+            if last_cond:
                  active_constraints.append(last_cond)
 
             if a_type == "global_state":
@@ -231,5 +231,6 @@ class DataFlowEngine:
         return {
             "variable_states": var_states,
             "flow_paths": paths,
-            "synthesized_calls": synthesized_calls
+            "synthesized_calls": synthesized_calls,
+            "raw_atoms": raw_atoms
         }

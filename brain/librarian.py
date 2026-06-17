@@ -184,8 +184,9 @@ class LibrarianEngine:
             "print": "Log/Display",
             "die": "Terminate",
             "header": "HTTP Redirect",
-            "mysqli_query": "DB Query",
-            "mysqli_prepare": "DB Prepare",
+            "mysqli_query": "[(DB)] Query",
+            "mysqli_prepare": "[(DB)] Prepare",
+            "mysqli_connect": "[(DB)] Connect",
             "eval": "🚨 DANGEROUS: Dynamic Eval",
             "exec": "🚨 DANGEROUS: System Exec",
             "system": "🚨 DANGEROUS: System Call",
@@ -384,12 +385,57 @@ class LibrarianEngine:
                     f.write(f"| `{var}` | `{data.get('type', 'unknown')}` | `{data.get('state', 'CONSTANT')}` |\n")
                 f.write("\n")
 
+            symbols_data = file_data.get("symbols_data", [])
+            if symbols_data:
+                f.write("## Symbols and Logic\n")
+                f.write("| Symbol | Kind | Signature | Description |\n")
+                f.write("|:---|:---|:---|:---|\n")
+                for s in symbols_data:
+                    name = s.get("name")
+                    kind = s.get("kind", "Function")
+                    sig = s.get("signature") or name
+                    doc = (s.get("docstring") or "").split("\n")[0]
+                    f.write(f"| [[{name}]] | `{kind}` | `{sig}` | {doc} |\n")
+                f.write("\n")
+
+                # Consolidated Business Rules
+                all_rules = []
+                for s in symbols_data:
+                    for rule in s.get("business_rules", []):
+                        all_rules.append(f"- **{s.get('name')}**: {rule}")
+                
+                if all_rules:
+                    f.write("## Business Logic & Requirements\n")
+                    for rule in all_rules:
+                        f.write(f"{rule}\n")
+                    f.write("\n")
+
+                # Aggregate Dataflow & Taint
+                all_flows = []
+                for s in symbols_data:
+                    for flow in s.get("flow_paths", []):
+                        all_flows.append({
+                            "source": s.get("name"),
+                            "variable": flow.get("variable"),
+                            "state": flow.get("state"),
+                            "sink": flow.get("sink")
+                        })
+                
+                if all_flows:
+                    f.write("## Dataflow & Taint Summary\n")
+                    f.write("| Source | Variable | State | Sink |\n")
+                    f.write("|:---|:---|:---|:---|\n")
+                    for flow in all_flows:
+                        f.write(f"| `{flow['source']}` | `{flow['variable']}` | `{flow['state']}` | `{flow['sink'] or 'internal'}` |\n")
+                    f.write("\n")
+
             symbols = file_data.get("symbols", [])
             if symbols:
-                f.write("## Symbols Defined\n")
+                f.write("## Navigation\n")
                 for s in symbols:
                     f.write(f"- [[{s}]]\n")
                 f.write("\n")
+
 
     def _make_transition_label(self, caller_name: str, callee_name: str, funcs: List[dict], sym_meta: dict) -> str:
         """Generates a transition label based on dataflow or signature."""
@@ -397,12 +443,27 @@ class LibrarianEngine:
         if caller_obj:
             passed_vars = []
             callee_base = callee_name.split(".")[-1]
+            
+            # Scenario Mapping: Detect Decision Drivers
+            decision_drivers = []
+            
             for flow in caller_obj.get("flow_paths", []):
+                variable = flow.get("variable", "")
+                # Check for decision drivers in conditions/variables
+                if any(x in variable for x in ["$_COOKIE", "$_SESSION", "$_GET['security']"]):
+                    decision_drivers.append(f"{variable}:{flow.get('state')}")
+
                 sink = flow.get("sink", "")
                 if sink and (sink == callee_name or sink == callee_base):
-                    passed_vars.append(f"{flow.get('variable')}:{flow.get('state')}")
+                    passed_vars.append(f"{variable}:{flow.get('state')}")
+            
+            # Prioritize decision drivers if they exist
+            if decision_drivers:
+                return f"[Scenario: {', '.join(list(set(decision_drivers)))}]"
+            
             if passed_vars:
                 return ", ".join(list(set(passed_vars)))
+
 
         callee_info = sym_meta.get(callee_name, {})
         params = callee_info.get("params", [])
@@ -432,54 +493,91 @@ class LibrarianEngine:
         """
         Builds a macroscopic behavioral model from an entrypoint.
         """
-        callees_from_map = calls_map.get(entrypoint_func, {}).get("callees", [])
-        
         states: set = {entrypoint_func}
         transitions = []
         visited: set = {entrypoint_func}
+
+        # Initialize BFS queue with (current, parent, depth, synth_label)
+        # Using detailed callees for entrypoint if available
+        detailed = calls_map.get(entrypoint_func, {}).get("callees_detailed", [])
         queue = []
-        for c in callees_from_map:
-            queue.append((c, entrypoint_func, 1, None))
-        
+        if detailed:
+            for c, cond in detailed:
+                queue.append((c, entrypoint_func, 1, cond))
+        else:
+            callees_from_map = calls_map.get(entrypoint_func, {}).get("callees", [])
+            for c in callees_from_map:
+                queue.append((c, entrypoint_func, 1, None))
+
         while queue:
             if len(states) >= max_states:
                 break
             current, parent, depth, synth_label = queue.pop(0)
-            states.add(current)
+            # Attempt to resolve synthesized names to real nodes for deeper traversal
+            canonical_current = current
+            if current.startswith("[") and "]" in current:
+                # Extract possible path/name from [verb] hint
+                parts = current.split("]", 1)
+                hint = parts[1].strip()
+                clean_hint = hint.replace("{", "").replace("}", "").strip("'\" ")
+                # Try exact match or suffix match
+                for f in funcs:
+                    f_name = f.get("name", "")
+                    if clean_hint == f_name or f_name.endswith(clean_hint) or clean_hint.endswith(f_name):
+                        canonical_current = f_name
+                        break
             
             label = synth_label or self._make_transition_label(parent, current, funcs, sym_meta)
-            transitions.append({"from": parent, "to": current, "condition": label or None})
+            # Scenario Fork Logic: parent --> decisionNode --> current
+            if label and "[Scenario:" in label:
+                decision_text = label.replace("[Scenario: ", "").rsplit("]", 1)[0].strip()
+                decision_node = f"Decision: {decision_text}"
+                states.add(decision_node)
+                transitions.append({"from": parent, "to": decision_node})
+                transitions.append({"from": decision_node, "to": current})
+            else:
+                transitions.append({"from": parent, "to": current, "condition": label or None})
             
-            if depth < max_depth and current not in visited:
-                visited.add(current)
-                next_callees = list(calls_map.get(current, {}).get("callees", []))
-                
-                # 1. Normal callees
-                for nc in next_callees:
-                    if nc not in visited:
-                        queue.append((nc, current, depth + 1, None))
+            if depth < max_depth:
+                # Determine if we should explore this node's callees
+                # We visit a canonical node only once to avoid cycles,
+                # but we allowed multiple transitions above.
+                if canonical_current not in visited:
+                    visited.add(canonical_current)
+                    
+                    # Get callees for the canonical node
+                    detailed_next = calls_map.get(canonical_current, {}).get("callees_detailed", [])
+                    if detailed_next:
+                        for nc, cond in detailed_next:
+                            queue.append((nc, current, depth + 1, cond))
+                    else:
+                        next_callees = list(calls_map.get(canonical_current, {}).get("callees", []))
+                        for nc in next_callees:
+                            queue.append((nc, current, depth + 1, None))
 
-                # 2. Inject synthesized calls from dataflow (e.g. includes/requires)
-                current_obj = next((f for f in funcs if f.get("name") == current), None)
-                if current_obj and "dataflow" in current_obj:
-                    for flow in current_obj["dataflow"]:
-                        if flow.get("type") in ("synthesized_call", "sink"):
-                            if flow.get("type") == "synthesized_call":
-                                hint = flow.get("resolved_hint") or flow.get("raw_path")
-                                verb = flow.get("verb", "call")
-                                synth_name = f"[{verb}] {hint}"
-                            else:
-                                # It's a sink
-                                sink_name = flow.get("sink")
-                                args = flow.get("args", "")
-                                synth_name = f"[{sink_name}] {args}"
-                            
-                            # Capture constraints for transition label
-                            constraints = flow.get("constraints", [])
-                            label = ", ".join(constraints) if constraints else None
-                            
-                            if synth_name not in visited:
+                    # 2. Inject synthesized calls from dataflow (e.g. includes/requires)
+                    # Use raw atoms from dataflow for on-the-fly injection
+                    current_obj = next((f for f in funcs if f.get("name") == canonical_current), None)
+
+                    if current_obj and "dataflow" in current_obj:
+                        for atom in current_obj["dataflow"]:
+                            if atom.get("type") in ("synthesized_call", "sink"):
+                                if atom.get("type") == "synthesized_call":
+                                    hint = atom.get("resolved_hint") or atom.get("raw_path")
+                                    verb = atom.get("verb", "call")
+                                    synth_name = f"[{verb}] {hint}"
+                                else:
+                                    # It's a sink
+                                    sink_name = atom.get("sink")
+                                    args = atom.get("args", "")
+                                    synth_name = f"[{sink_name}] {args}"
+                                
+                                # Capture constraints for transition label
+                                constraints = atom.get("constraints", [])
+                                label = ", ".join(constraints) if constraints else None
+                                
                                 queue.append((synth_name, current, depth + 1, label))
+
 
         built_state_meta = {}
         for s in states:
@@ -490,13 +588,13 @@ class LibrarianEngine:
                     # Determine archetype from file path or name
                     f_file = f_match.get("file", "").lower()
                     arch = "generic"
-                    if "security" in f_file or "auth" in f_file or "guard" in f_file:
-                        arch = "security-guard"
-                    elif "api" in f_file or "controller" in f_file:
-                        arch = "api-endpoint"
-                    elif "db" in f_file or "model" in f_file or "repository" in f_file:
+                    if any(x in f_file for x in ["db/", "model/", "repository/", "mysqli"]):
                         arch = "data-repository"
-                    elif "util" in f_file or "helper" in f_file:
+                    elif any(x in f_file for x in ["api/", "controller/"]):
+                        arch = "api-endpoint"
+                    elif any(x in f_file for x in ["security", "auth", "guard"]):
+                        arch = "security-guard"
+                    elif any(x in f_file for x in ["util", "helper"]):
                         arch = "utility"
                     
                     meta = {
@@ -511,13 +609,16 @@ class LibrarianEngine:
             
             if s.startswith("["):
                 # Synthesized state
+                meta = meta or {"params": [], "returns": {}, "docstring": "", "variable_states": {}, "flow_paths": [], "archetype": "unknown"}
                 if "include" in s or "require" in s:
-                    meta = meta or {}
                     meta["archetype"] = "dynamic-include"
                 else:
-                    meta = meta or {}
-                    meta["archetype"] = "data-sink"
-            
+                    if any(x in s for x in ["eval", "exec", "system"]):
+                        meta["archetype"] = "security-risk"
+                    elif "mysqli" in s or meta.get("archetype") == "data-repository":
+                        meta["archetype"] = "db-interaction"
+                    else:
+                        meta["archetype"] = "data-sink"
             built_state_meta[s] = meta or {"params": [], "returns": {}, "docstring": "", "variable_states": {}, "flow_paths": [], "archetype": "unknown"}
 
         is_hub = built_state_meta.get(entrypoint_func, {}).get("archetype") == "system-hub"

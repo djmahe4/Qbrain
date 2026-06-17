@@ -33,7 +33,7 @@ def sync_library(config, indexer, console):
             
             try:
                 cog_res = indexer.query_graph(
-                    "MATCH (f) WHERE f:Function OR f:Method OR f:Module "
+                    "MATCH (f) WHERE f:Function OR f:Method OR f:Module OR f:Class OR f:Interface OR f:Enum "
                     "RETURN f.name AS name, f.mass AS mass, f.potential_energy AS potential_energy, f.semantic_archetype AS archetype"
                 )
                 for item in cog_res:
@@ -103,7 +103,7 @@ def sync_library(config, indexer, console):
             df_engine = DataFlowEngine()
             
             # Retrieve all symbols (including those without docstrings) for comprehensive analysis
-            all_symbols_res = indexer.query_graph("MATCH (n) WHERE n:Function OR n:Method OR n:Module RETURN n.name AS name, labels(n) AS labels, n.file_path AS file, n.file AS file_alt")
+            all_symbols_res = indexer.query_graph("MATCH (n) WHERE n:Function OR n:Method OR n:Module OR n:Class OR n:Interface OR n:Enum RETURN n.name AS name, labels(n) AS labels, n.file_path AS file, n.file AS file_alt")
             
             funcs = parser.get_functions_with_docstrings()
             existing_names = {f["name"] for f in funcs}
@@ -165,6 +165,7 @@ def sync_library(config, indexer, console):
                 df_res = df_engine.analyze_snippet(f["code_snippet"], lang)
                 f["variable_states"] = df_res.get("variable_states", {})
                 f["flow_paths"] = df_res.get("flow_paths", [])
+                f["dataflow"] = df_res.get("raw_atoms", [])  # Persist raw atoms for behavior mapping
 
                 # Merge Synthesized Calls
                 for sync_call in df_res.get("synthesized_calls", []):
@@ -178,8 +179,17 @@ def sync_library(config, indexer, console):
                                 target_node = potential.get("name")
                                 break
                         final_target = target_node or f"[{verb}] {hint}"
-                        if final_target not in calls_map.get(name, {}).get("callees", []):
+                        
+                        # Capture constraints for transition labels
+                        constraints = sync_call.get("constraints", [])
+                        condition = ", ".join(constraints) if constraints else None
+
+                        if (final_target, condition) not in calls_map.get(name, {}).get("callees_detailed", []):
+                            calls_map.setdefault(name, {}).setdefault("callees_detailed", []).append((final_target, condition))
                             calls_map.setdefault(name, {}).setdefault("callees", []).append(final_target)
+                        
+                        if name not in calls_map.get(final_target, {}).get("callers", []):
+                            calls_map.setdefault(final_target, {}).setdefault("callers", []).append(name)
                         if name not in calls_map.get(final_target, {}).get("callers", []):
                             calls_map.setdefault(final_target, {}).setdefault("callers", []).append(name)
 
@@ -305,8 +315,11 @@ def sync_library(config, indexer, console):
             # 6. Export
             console.print("Exporting enriched vault...")
             all_warnings = []
+            file_symbols_data = {}  # Collect data for holistic file export
+
             for f in funcs:
                 name = f.get("name")
+                f_path = f.get("file")
                 parsed_genome = parser.parse_genome(f)
                 if parsed_genome.get("warnings"):
                     all_warnings.append({"name": name, "file": parsed_genome.get("file"), "warnings": parsed_genome.get("warnings")})
@@ -321,7 +334,7 @@ def sync_library(config, indexer, console):
                 symbol_kind = next((k for k in _kind_priority if k in labels), "Function")
 
                 symbol_data = {
-                    "name": name, "language": f.get("language") or "generic", "file": f.get("file"),
+                    "name": name, "language": f.get("language") or "generic", "file": f_path,
                     "kind": symbol_kind,
                     "signature": f.get("signature") or name, "docstring": f.get("docstring"),
                     "params": parsed_genome.get("params", []), "returns": parsed_genome.get("returns", {}),
@@ -334,7 +347,14 @@ def sync_library(config, indexer, console):
                     "vulnerabilities": symbol_vulns, "line": int(start_l) if start_l is not None else None,
                     "line_range": line_range, "variable_states": f.get("variable_states", {}), "flow_paths": f.get("flow_paths", [])
                 }
-                engine.export_symbol(symbol_data)
+                
+                # Noise reduction: only export Class-level symbols individually
+                if symbol_kind in ["Class", "Interface", "Enum"]:
+                    engine.export_symbol(symbol_data)
+                
+                # Store for holistic file documentation
+                if f_path:
+                    file_symbols_data.setdefault(f_path, []).append(symbol_data)
 
             # File mappings
             files_map = {}
@@ -368,7 +388,16 @@ def sync_library(config, indexer, console):
                     except Exception: pass
                 file_var_states = {}
                 for fn in file_funcs: file_var_states.update(fn.get("variable_states", {}))
-                engine.export_file({"file_path": f_path, "language": lang, "lines_of_code": lines_of_code, "size_bytes": size_bytes, "symbols": symbols_list, "variable_states": file_var_states})
+                engine.export_file({
+                    "file_path": f_path, 
+                    "language": lang, 
+                    "lines_of_code": lines_of_code, 
+                    "size_bytes": size_bytes, 
+                    "symbols": symbols_list, 
+                    "symbols_data": file_symbols_data.get(f_path, []),  # Holistic awareness
+                    "variable_states": file_var_states
+                })
+
 
             # Reports
             engine.export_warnings(all_warnings)
