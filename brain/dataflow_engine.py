@@ -5,7 +5,7 @@ from brain.parsers import php
 class DataFlowEngine:
     """
     Analyzes code snippets to track variable lifecycles, rich states, types, and constraints.
-    Acts as a coordinator using language-specific parsers.
+    Enhanced to propagate line numbers and support scenario mapping.
     """
     
     # Generic patterns for fallback or common structures
@@ -50,7 +50,7 @@ class DataFlowEngine:
             
         lang = language.lower()
         var_states = {} # var_name -> {state, type, source, properties: {}, constraints: []}
-        paths = [] # List of {source, sink, variable, state}
+        paths = [] # List of {source, sink, variable, state, line}
         synthesized_calls = []
         
         # 1. Use Language-Specific Parser to extract raw dataflow atoms
@@ -58,13 +58,14 @@ class DataFlowEngine:
         if lang == "php":
             raw_atoms = php.extract_dataflow(code)
         
-        # 3. Process Atoms
+        # 2. Process Atoms
         active_constraints = []
         constraint_stack = []
         last_cond = None
         
         for atom in raw_atoms:
             a_type = atom.get("type")
+            line = atom.get("line")
             
             if a_type == "condition":
                 is_loop = atom.get("verb") in ("for", "foreach")
@@ -81,17 +82,22 @@ class DataFlowEngine:
                 elif atom["value"] == "}":
                     if constraint_stack: constraint_stack.pop()
             
-            active_constraints = list(set(constraint_stack))
-            if last_cond: active_constraints.append(last_cond)
+            curr_active_constraints = list(set(constraint_stack))
+            if last_cond: curr_active_constraints.append(last_cond)
 
-            if a_type in ("global_state", "source"):
+            if a_type == "global_state":
                 var = atom["variable"]
-                source_name = atom.get("source") or (var.split("[")[0] if "[" in var else "external")
-                var_states[var] = {"state": "TAINTED", "type": "dynamic", "source": source_name, "constraints": list(active_constraints)}
+                var_states[var] = {
+                    "state": "GLOBAL_STATE",
+                    "type": "dynamic",
+                    "source": atom["source"],
+                    "constraints": curr_active_constraints
+                }
+            
             elif a_type == "assignment":
-                var_raw, val_raw = atom["variable"], atom["value"]
-                base_var = var_raw
-                prop_name = None
+                var_raw = atom["variable"]
+                val_raw = atom["value"]
+                base_var, prop_name = var_raw, None
                 if "->" in var_raw:
                     parts = var_raw.split("->", 1)
                     base_var, prop_name = parts[0], parts[1]
@@ -100,16 +106,24 @@ class DataFlowEngine:
                     base_var, prop_name = parts[0], parts[1].strip("]'\" ")
 
                 if base_var not in var_states:
-                    var_states[base_var] = {"state": "CONSTANT", "type": "unknown", "source": "internal", "properties": {}, "constraints": list(active_constraints)}
+                    var_states[base_var] = {
+                        "state": "CONSTANT",
+                        "type": "unknown",
+                        "source": "internal",
+                        "properties": {},
+                        "constraints": curr_active_constraints
+                    }
 
                 inferred_type = self._infer_type(val_raw)
-                if base_var == var_raw: var_states[base_var]["type"] = inferred_type
+                if base_var == var_raw:
+                    var_states[base_var]["type"] = inferred_type
                 else:
                     var_states[base_var]["properties"][prop_name] = {"type": inferred_type, "value_hint": val_raw[:50]}
-                    if var_states[base_var]["type"] == "unknown": var_states[base_var]["type"] = "array" if "[" in var_raw else "object"
+                    if var_states[base_var]["type"] == "unknown":
+                        var_states[base_var]["type"] = "array" if "[" in var_raw else "object"
 
-                # Security Logic
-                state, source = var_states[base_var]["state"], var_states[base_var]["source"]
+                state = var_states[base_var]["state"]
+                source = var_states[base_var]["source"]
                 is_tainted = any(s in val_raw for s in ["$_GET", "$_POST", "$_REQUEST", "$_COOKIE", "$_SERVER"])
                 is_sanitized = any(re.search(san, val_raw, re.IGNORECASE) for san in self.SANITIZERS.get(lang, []))
                 
@@ -118,37 +132,51 @@ class DataFlowEngine:
                     source = next((s for s in ["$_GET", "$_POST", "$_REQUEST", "$_COOKIE", "$_SERVER"] if s in val_raw), "external")
                 if is_sanitized: state = "SAFE"
                     
-                # Inheritance
-                for ex_var, ex_data in var_states.items():
-                    if ex_var == base_var: continue
-                    if re.search(fr"(?<![\w\$]){re.escape(ex_var)}(?![\w\$])", val_raw):
-                        if ex_data["state"] == "TAINTED" and state != "SAFE":
-                            state, source = "TAINTED", ex_data["source"]
-                        elif ex_data["state"] == "SAFE":
+                for existing_var, existing_data in var_states.items():
+                    if existing_var == base_var: continue
+                    escaped_var = re.escape(existing_var)
+                    pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
+                    if re.search(pattern, val_raw):
+                        if existing_data["state"] == "TAINTED" and state != "SAFE":
+                            state = "TAINTED"
+                            source = existing_data["source"]
+                        elif existing_data["state"] == "SAFE":
                             state = "SAFE"
-                            if ex_data["source"] != "internal": source = ex_data["source"]
+                            if existing_data["source"] != "internal": source = existing_data["source"]
                 
-                var_states[base_var]["state"], var_states[base_var]["source"] = state, source
+                var_states[base_var]["state"] = state
+                var_states[base_var]["source"] = source
 
             elif a_type == "synthesized_call":
-                raw_path, resolved_hint = atom["raw_path"], atom["raw_path"]
+                raw_path = atom["raw_path"]
+                resolved_hint = raw_path
                 for var, data in var_states.items():
                     if var in raw_path: resolved_hint = resolved_hint.replace(var, f"{{{var}}}")
-                synthesized_calls.append({"verb": atom["verb"], "raw_path": raw_path, "resolved_hint": resolved_hint, "constraints": list(active_constraints)})
+                
+                synthesized_calls.append({
+                    "verb": atom["verb"],
+                    "raw_path": raw_path,
+                    "resolved_hint": resolved_hint,
+                    "constraints": curr_active_constraints,
+                    "line": line
+                })
 
             elif a_type == "sink":
-                sink_name, args = atom["sink"], atom["args"]
-                # Track constants (like defines) as part of dataflow state mapping
-                if sink_name == "define":
-                    parts = args.split(",", 1)
-                    if len(parts) == 2:
-                        c_name = parts[0].strip().strip("'\"")
-                        c_val = parts[1].strip()
-                        var_states[c_name] = {"state": "CONSTANT", "type": self._infer_type(c_val), "source": "internal", "constraints": list(active_constraints)}
+                sink_name = atom["sink"]
+                args = atom["args"]
                 for var_name, data in var_states.items():
-                    if re.search(fr"(?<![\w\$]){re.escape(var_name)}(?![\w\$])", args):
-                        # Always track flows to sinks to provide richer dataflow descriptions
-                        paths.append({"source": data.get("source", "internal"), "sink": sink_name, "variable": var_name, "state": data.get("state", "CONSTANT"), "type": data.get("type", "unknown"), "constraints": list(active_constraints)})
+                    escaped_var = re.escape(var_name)
+                    pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
+                    if re.search(pattern, args):
+                        if data["state"] != "CONSTANT" or data["source"] != "internal":
+                            paths.append({
+                                "source": data["source"],
+                                "sink": sink_name,
+                                "variable": var_name,
+                                "state": data["state"],
+                                "type": data["type"],
+                                "line": line
+                            })
 
         return {
             "variable_states": var_states,
