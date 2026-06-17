@@ -248,6 +248,12 @@ class LibrarianEngine:
                     state = data.get("state", "CONSTANT")
                     vtype = data.get("type", "unknown")
                     details = []
+                    
+                    if state == "CONSTANT" and data.get("value"):
+                        val = data.get("value")
+                        source = data.get("source", "internal")
+                        details.append(f"value `{val}` (from `{source}`)")
+                    
                     props = data.get("properties", {})
                     for p, pdata in props.items():
                         details.append(f"prop `{p}` ({pdata.get('type')})")
@@ -321,7 +327,6 @@ class LibrarianEngine:
                 f.write(f"```{lang}\n")
                 f.write(symbol_data["code_snippet"])
                 f.write("\n```\n")
-
     def export_file(self, file_data: dict):
         file_path = file_data.get("file_path")
         if not file_path: return
@@ -356,7 +361,13 @@ class LibrarianEngine:
                 f.write("| Variable | Type | State |\n")
                 f.write("|:---|:---|:---|\n")
                 for var, data in var_states.items():
-                    f.write(f"| `{var}` | `{data.get('type', 'unknown')}` | `{data.get('state', 'CONSTANT')}` |\n")
+                    state = data.get("state", "CONSTANT")
+                    vtype = data.get("type", "unknown")
+                    source = data.get("source", "internal")
+                    if state == "CONSTANT" and data.get("value"):
+                        f.write(f"| `{var}` | `{vtype}` | `{state}` (value `{data.get('value')}` from `{source}`) |\n")
+                    else:
+                        f.write(f"| `{var}` | `{vtype}` | `{state}` |\n")
                 f.write("\n")
 
             symbols_data = file_data.get("symbols_data", [])

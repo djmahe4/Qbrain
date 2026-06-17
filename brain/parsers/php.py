@@ -9,6 +9,37 @@ _PHP_RETURNS_RE = re.compile(
     r"@returns?\s+(?:\{([^}]*)\}\s+)?(.*)", re.IGNORECASE
 )
 
+def extract_globals(code: str) -> Dict[str, Any]:
+    """
+    Extracts global constants and environment configurations from PHP setup files.
+    """
+    globals_data = {}
+
+    # define('NAME', 'VALUE')
+    define_pattern = re.compile(r"define\s*\(\s*['\"](\w+)['\"]\s*,\s*(['\"].*?['\"]|[^,)]+)\s*\)", re.IGNORECASE)
+    for match in define_pattern.finditer(code):
+        name = match.group(1)
+        value = match.group(2).strip().strip("'\"")
+        globals_data[name] = value
+
+    # const NAME = 'VALUE'
+    const_pattern = re.compile(r"\bconst\s+(\w+)\s*=\s*(['\"].*?['\"]|[^;]+);", re.IGNORECASE)
+    for match in const_pattern.finditer(code):
+        name = match.group(1)
+        value = match.group(2).strip().strip("'\"")
+        globals_data[name] = value
+
+    # Global array initializations like $_CONFIG['key'] = 'value'
+    # Or $GLOBALS['key'] = 'value'
+    global_init_pattern = re.compile(r"(\$_(SESSION|CONFIG|ENV|SERVER)|(?:\$GLOBALS))\[['\"](\w+)['\"]\]\s*=\s*(['\"].*?['\"]|[^;]+);", re.IGNORECASE)
+    for match in global_init_pattern.finditer(code):
+        array_name = match.group(1)
+        key = match.group(3)
+        value = match.group(4).strip().strip("'\"")
+        globals_data[f"{array_name}['{key}']"] = value
+
+    return globals_data
+
 def _parse_php_docstring(docstring: str) -> Dict[str, List[str]]:
     """Split a PHP docstring into sections."""
     sections: Dict[str, List[str]] = {"_main": []}
@@ -83,6 +114,26 @@ def extract_dataflow(code_snippet: str) -> List[Dict[str, Any]]:
             "line": get_line(match.start())
         })
 
+    # 1.1 Constants Detection (define and const)
+    define_pattern = re.compile(r"define\s*\(\s*['\"](\w+)['\"]\s*,\s*(['\"].*?['\"]|[^,)]+)\s*\)", re.IGNORECASE)
+    for match in define_pattern.finditer(code_snippet):
+        dataflow.append({
+            "type": "constant",
+            "variable": match.group(1),
+            "value": match.group(2).strip().strip("'\""),
+            "pos": match.start(),
+            "line": get_line(match.start())
+        })
+
+    const_pattern = re.compile(r"\bconst\s+(\w+)\s*=\s*(['\"].*?['\"]|[^;]+);", re.IGNORECASE)
+    for match in const_pattern.finditer(code_snippet):
+        dataflow.append({
+            "type": "constant",
+            "variable": match.group(1),
+            "value": match.group(2).strip().strip("'\""),
+            "pos": match.start(),
+            "line": get_line(match.start())
+        })
     # 2. Assignments
     assign_pattern = re.compile(r"(?<!['\"\w\$])(\$[\w\->\[\]'\" ]+)\s*([\.\+\-\*\/]?=)\s*([^;]+);")
     for match in assign_pattern.finditer(code_snippet):

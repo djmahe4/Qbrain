@@ -41,7 +41,7 @@ class DataFlowEngine:
             return "number"
         return "dynamic"
 
-    def analyze_snippet(self, code: str, language: str) -> Dict[str, Any]:
+    def analyze_snippet(self, code: str, language: str, registry: Any = None) -> Dict[str, Any]:
         """
         Builds a rich dataflow and structural model from a code snippet.
         """
@@ -52,14 +52,24 @@ class DataFlowEngine:
         var_states = {} # var_name -> {state, type, source, properties: {}, constraints: []}
         paths = [] # List of {source, sink, variable, state, line}
         synthesized_calls = []
-        
+
+        # Initialize var_states with registry constants if applicable
+        if registry and lang == "php":
+            for const_name, value in registry.constants.items():
+                var_states[const_name] = {
+                    "state": "CONSTANT",
+                    "type": self._infer_type(str(value)),
+                    "source": registry.get_origin(const_name) or "bootstrap",
+                    "value": value,
+                    "constraints": []
+                }
+
         # 1. Use Language-Specific Parser to extract raw dataflow atoms
         raw_atoms = []
         if lang == "php":
             raw_atoms = php.extract_dataflow(code)
         
         # 2. Process Atoms
-        active_constraints = []
         constraint_stack = []
         last_cond = None
         
@@ -69,17 +79,17 @@ class DataFlowEngine:
             
             if a_type == "condition":
                 is_loop = atom.get("verb") in ("for", "foreach")
-                cond_content = atom["content"]
+                cond_content = atom.get("content", "")
                 if len(cond_content) > 200: cond_content = cond_content[:197] + "..."
                 if not is_loop: last_cond = cond_content
-                if not last_cond and atom["verb"] == "else": last_cond = "else branch"
+                if not last_cond and atom.get("verb") == "else": last_cond = "else branch"
             
             elif a_type == "delimiter":
-                if atom["value"] == "{":
+                if atom.get("value") == "{":
                     if last_cond:
                         constraint_stack.append(last_cond)
                         last_cond = None
-                elif atom["value"] == "}":
+                elif atom.get("value") == "}":
                     if constraint_stack: constraint_stack.pop()
             
             curr_active_constraints = list(set(constraint_stack))
@@ -91,6 +101,16 @@ class DataFlowEngine:
                     "state": "GLOBAL_STATE",
                     "type": "dynamic",
                     "source": atom["source"],
+                    "constraints": curr_active_constraints
+                }
+            
+            elif a_type == "constant":
+                var = atom["variable"]
+                var_states[var] = {
+                    "state": "CONSTANT",
+                    "type": self._infer_type(str(atom["value"])),
+                    "source": "internal",
+                    "value": atom["value"],
                     "constraints": curr_active_constraints
                 }
             
@@ -137,12 +157,12 @@ class DataFlowEngine:
                     escaped_var = re.escape(existing_var)
                     pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
                     if re.search(pattern, val_raw):
-                        if existing_data["state"] == "TAINTED" and state != "SAFE":
+                        if existing_data.get("state") == "TAINTED" and state != "SAFE":
                             state = "TAINTED"
-                            source = existing_data["source"]
-                        elif existing_data["state"] == "SAFE":
+                            source = existing_data.get("source", "external")
+                        elif existing_data.get("state") == "SAFE":
                             state = "SAFE"
-                            if existing_data["source"] != "internal": source = existing_data["source"]
+                            if existing_data.get("source") != "internal": source = existing_data.get("source")
                 
                 var_states[base_var]["state"] = state
                 var_states[base_var]["source"] = source
@@ -150,14 +170,37 @@ class DataFlowEngine:
             elif a_type == "synthesized_call":
                 raw_path = atom["raw_path"]
                 resolved_hint = raw_path
+                
+                # 1. Resolve against local variables
                 for var, data in var_states.items():
-                    if var in raw_path: resolved_hint = resolved_hint.replace(var, f"{{{var}}}")
+                    if var.startswith("$"):
+                        escaped_var = re.escape(var)
+                        pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
+                        if re.search(pattern, resolved_hint):
+                            val_hint = data.get("value_hint", data.get("value", "..."))
+                            resolved_hint = re.sub(pattern, str(val_hint), resolved_hint)
+                
+                # 2. Resolve against registry constants
+                if registry and lang == "php":
+                    for const_name in registry.constants:
+                        escaped_const = re.escape(const_name)
+                        pattern = fr"(?<![\w\$]){escaped_const}(?![\w\$])"
+                        if re.search(pattern, resolved_hint):
+                            val = registry.get_constant(const_name)
+                            resolved_hint = re.sub(pattern, str(val), resolved_hint)
+                
+                # Cleanup path separators and markers
+                # Remove dots used for concatenation and handle quotes
+                resolved_hint = re.sub(r"['\"]\s*\.\s*", "", resolved_hint) # 'a' . b -> ab
+                resolved_hint = re.sub(r"\s*\.\s*['\"]", "", resolved_hint) # b . 'a' -> ab
+                resolved_hint = re.sub(r"(?<!\w)\.|\.(?!\w)", "/", resolved_hint)
+                resolved_hint = resolved_hint.replace("'", "").replace('"', "").replace("//", "/")
+                resolved_hint = resolved_hint.strip()
                 
                 synthesized_calls.append({
                     "verb": atom["verb"],
-                    "raw_path": raw_path,
-                    "resolved_hint": resolved_hint,
-                    "constraints": curr_active_constraints,
+                    "raw": raw_path,
+                    "resolved": resolved_hint,
                     "line": line
                 })
 
@@ -168,13 +211,13 @@ class DataFlowEngine:
                     escaped_var = re.escape(var_name)
                     pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
                     if re.search(pattern, args):
-                        if data["state"] != "CONSTANT" or data["source"] != "internal":
+                        if data.get("state") != "CONSTANT" or data.get("source") != "internal":
                             paths.append({
-                                "source": data["source"],
+                                "source": data.get("source", "unknown"),
                                 "sink": sink_name,
                                 "variable": var_name,
-                                "state": data["state"],
-                                "type": data["type"],
+                                "state": data.get("state", "unknown"),
+                                "type": data.get("type", "unknown"),
                                 "line": line
                             })
 

@@ -12,6 +12,8 @@ from brain.embedder import Embedder
 from brain.quantum_scorer import QuantumScorer, FunctionNode
 from brain.dataflow_engine import DataFlowEngine
 from brain.language_parser import detect_language
+from brain.global_registry import GlobalRegistry
+from brain.parsers import php as php_parser
 
 logger = logging.getLogger(__name__)
 
@@ -89,10 +91,44 @@ def sync_library(config, indexer, console):
                     if caller and callee:
                         if callee not in calls_map.get(caller, {}).get("callees", []):
                             calls_map.setdefault(caller, {}).setdefault("callees", []).append(callee)
-                        if caller not in calls_map.get(callee, {}).get("callers", []):
-                            calls_map.setdefault(callee, {}).setdefault("callers", []).append(caller)
             except Exception as e:
-                console.print(f"[yellow]Warning: could not merge SQLite entanglements: {e}[/yellow]")
+                console.print(f"[yellow]Warning: could not map function entanglements: {e}[/yellow]")
+            # 2.5 Environmental Pre-Scan (Bootstrap & Global Constants)
+            console.print("Executing environmental pre-scan (global constants)...")
+            registry = GlobalRegistry()
+            setup_patterns = [
+                r"config.*\.php$", r"bootstrap.*\.php$", r"common\.php$", 
+                r"\.env$", r"settings\.php$", r"init\.php$"
+            ]
+            
+            setup_files = []
+            for root, _, files in os.walk(repo_path):
+                if any(x in root for x in ["obsidian_vault", ".git", "node_modules", "vendor"]):
+                    continue
+                for file in files:
+                    if any(re.match(pattern, file, re.IGNORECASE) for pattern in setup_patterns):
+                        setup_files.append(os.path.join(root, file))
+            
+            for setup_file in setup_files:
+                try:
+                    with open(setup_file, "r", errors="ignore") as f:
+                        content = f.read()
+                    
+                    rel_path = os.path.relpath(setup_file, repo_path)
+                    
+                    if setup_file.lower().endswith(".php"):
+                        found_globals = php_parser.extract_globals(content)
+                        for name, value in found_globals.items():
+                            registry.register_constant(name, value, origin=rel_path)
+                    elif setup_file.lower().endswith(".env"):
+                        for line in content.splitlines():
+                            line = line.strip()
+                            if not line or line.startswith("#"): continue
+                            if "=" in line:
+                                key, val = line.split("=", 1)
+                                registry.register_env(key.strip(), val.strip().strip("'\""))
+                except Exception as e:
+                    logger.warning(f"Failed to scan bootstrap file {setup_file}: {e}")
 
             # 3. Retrieve functions and analyze dataflow
             parser = DocstringParser(indexer)
@@ -136,11 +172,11 @@ def sync_library(config, indexer, console):
                     try: f["code_snippet"] = indexer.get_code_snippet(name).get("code") or ""
                     except Exception: f["code_snippet"] = ""
                 
-                df_res = df_engine.analyze_snippet(f["code_snippet"], lang)
+                df_res = df_engine.analyze_snippet(f["code_snippet"], lang, registry=registry)
                 f["variable_states"], f["flow_paths"], f["dataflow"] = df_res.get("variable_states", {}), df_res.get("flow_paths", []), df_res.get("raw_atoms", [])
 
                 for sync_call in df_res.get("synthesized_calls", []):
-                    verb, hint = sync_call.get("verb"), sync_call.get("resolved_hint")
+                    verb, hint = sync_call.get("verb"), sync_call.get("resolved")
                     if hint:
                         target_node = None
                         clean_hint = hint.replace("{", "").replace("}", "").strip("'\" ")
@@ -315,10 +351,33 @@ def sync_library(config, indexer, console):
                 cog = cognitive_info.get(name, {})
                 sym_meta[name] = {"params": f.get("params", []), "returns": f.get("returns", {}), "docstring": f.get("docstring") or "", "potential_energy": cog.get("potential_energy", 0.0), "archetype": cog.get("archetype", "generic"), "variable_states": f.get("variable_states", {}), "flow_paths": f.get("flow_paths", [])}
 
+            # Consolidate entrypoints by directory to reduce redundancy (e.g. low/med/high variants)
+            grouped_eps = {}
             for ep in entrypoints:
+                path = ep.get("file", "")
+                group_key = os.path.dirname(path) if path else "root"
+                if group_key not in grouped_eps:
+                    grouped_eps[group_key] = ep
+                else:
+                    # Generic preference: prefer 'index' or the shortest filename as the representative
+                    curr_name = os.path.basename(grouped_eps[group_key].get("file", "")).lower()
+                    new_name = os.path.basename(path).lower()
+                    if "index" in new_name and "index" not in curr_name:
+                        grouped_eps[group_key] = ep
+                    elif len(new_name) < len(curr_name) and "index" not in curr_name:
+                        grouped_eps[group_key] = ep
+
+            for group_path, ep in grouped_eps.items():
                 ep_path = ep.get("file", "")
                 ep_func = short_to_qualified.get(ep_path) or next((f.get("name") for f in funcs if f.get("file") == ep_path), ep.get("name", "main"))
-                engine.export_behavior(engine.generate_behavior_model(ep_func, ep_path, calls_map, funcs, sym_meta, config.data.get("behavior_max_depth", 10), config.data.get("behavior_max_states", 50)))
+                
+                model = engine.generate_behavior_model(ep_func, ep_path, calls_map, funcs, sym_meta, config.data.get("behavior_max_depth", 10), config.data.get("behavior_max_states", 50))
+                
+                # If this is a representative of a directory group, name the behavior after the directory
+                if group_path != "root" and "index" in os.path.basename(ep_path).lower():
+                    model["name"] = group_path.replace("/", "_")
+                
+                engine.export_behavior(model)
 
             try:
                 diff_tool = BranchDiff(config, Embedder())
