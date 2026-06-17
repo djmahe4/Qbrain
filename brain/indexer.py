@@ -207,3 +207,28 @@ class Indexer:
             return json.loads(res)
         except json.JSONDecodeError:
             return {"raw_result": res}
+    def search_graph(self, pattern: str, label: Optional[str] = None, project: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Search for symbols in the graph."""
+        p_name = project or self._get_project_name()
+        args = {"query": pattern, "project": p_name}
+        if label:
+            args["label"] = label
+        res = self._run_cli("search_graph", args)
+        try:
+            return json.loads(res)
+        except json.JSONDecodeError:
+            return []
+
+    def trace_path(self, function_name: str, direction: str = "both", depth: int = 3, project: Optional[str] = None) -> Dict[str, Any]:
+        """Trace the call path for a function (Main/Standard tool)."""
+        p_name = project or self._get_project_name()
+        res = self._run_cli("trace_path", {
+            "function_name": function_name,
+            "direction": direction,
+            "depth": depth,
+            "project": p_name
+        })
+        try:
+            return json.loads(res)
+        except json.JSONDecodeError:
+            return {"path": []}

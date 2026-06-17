@@ -21,16 +21,17 @@ def sync_library(config, indexer, console):
     
     console.print(f"Syncing librarian from repository [cyan]{repo_path}[/cyan] to vault [cyan]{vault_path}[/cyan]...")
     
-    engine = LibrarianEngine(repo_path, vault_path)
+    embedder = Embedder()
+    engine = LibrarianEngine(repo_path, vault_path, indexer=indexer)
+    branch_diff = BranchDiff(config, embedder)
     
     try:
         with engine.lock():
             engine.setup_vault()
             
-            # 1. Load cognitive data from graph and SQLite sidecar
+            # 1. Load cognitive data
             console.print("Loading cognitive properties (merging Graph and SQLite)...")
             cognitive_info = {}
-            
             try:
                 cog_res = indexer.query_graph(
                     "MATCH (f) WHERE f:Function OR f:Method OR f:Module OR f:Class OR f:Interface OR f:Enum "
@@ -39,421 +40,247 @@ def sync_library(config, indexer, console):
                 for item in cog_res:
                     name = item.get("name")
                     if name:
-                        mass = item.get("mass")
-                        pe = item.get("potential_energy")
-                        arch = item.get("archetype")
+                        mass, pe, arch = item.get("mass"), item.get("potential_energy"), item.get("archetype")
                         cognitive_info[name] = {
                             "mass": float(mass) if (mass is not None and str(mass).strip() != "") else 1.0,
                             "potential_energy": float(pe) if (pe is not None and str(pe).strip() != "") else 0.0,
                             "archetype": arch if (arch is not None and str(arch).strip() != "") else "generic"
                         }
-            except Exception as e:
-                console.print(f"[yellow]Warning: could not load cognitive metadata from graph: {e}[/yellow]")
+            except Exception as e: console.print(f"[yellow]Warning: graph metadata load failed: {e}[/yellow]")
 
             try:
-                internal_beliefs = indexer.persistence.get_internal_beliefs()
-                for b in internal_beliefs:
+                for b in indexer.persistence.get_internal_beliefs():
                     name = b.get("symbol")
                     if name:
-                        if name not in cognitive_info:
-                            cognitive_info[name] = {
-                                "mass": b.get("support_mass", 1.0),
-                                "potential_energy": b.get("potential_energy", 0.0),
-                                "archetype": b.get("winner", "generic")
-                            }
+                        if name not in cognitive_info: cognitive_info[name] = {"mass": b.get("support_mass", 1.0), "potential_energy": b.get("potential_energy", 0.0), "archetype": b.get("winner", "generic")}
                         else:
                             cognitive_info[name]["mass"] = b.get("support_mass", cognitive_info[name]["mass"])
                             cognitive_info[name]["potential_energy"] = b.get("potential_energy", cognitive_info[name]["potential_energy"])
                             cognitive_info[name]["archetype"] = b.get("winner", cognitive_info[name]["archetype"])
-            except Exception as e:
-                console.print(f"[yellow]Warning: could not merge SQLite beliefs: {e}[/yellow]")
+            except Exception as e: console.print(f"[yellow]Warning: SQLite beliefs merge failed: {e}[/yellow]")
 
-            _zero_count = sum(1 for v in cognitive_info.values() if v.get("potential_energy", 0.0) == 0.0)
-            _pe_mostly_zero = (_zero_count / max(len(cognitive_info), 1)) > 0.8 if cognitive_info else True
+            _pe_mostly_zero = (sum(1 for v in cognitive_info.values() if v.get("potential_energy", 0.0) == 0.0) / max(len(cognitive_info), 1)) > 0.8 if cognitive_info else True
             
-            # 2. Query CALLS relationships
+            # 2. CALLS relationships
             console.print("Mapping function entanglements...")
             calls_map = {}
             try:
-                calls_res = indexer.query_graph("MATCH (a)-[:CALLS]->(b) RETURN a.name AS caller, b.name AS callee")
-                for item in calls_res:
-                    caller = item.get("caller")
-                    callee = item.get("callee")
+                for item in indexer.query_graph("MATCH (a)-[:CALLS]->(b) RETURN a.name AS caller, b.name AS callee"):
+                    caller, callee = item.get("caller"), item.get("callee")
                     if caller and callee:
                         calls_map.setdefault(caller, {}).setdefault("callees", []).append(callee)
                         calls_map.setdefault(callee, {}).setdefault("callers", []).append(caller)
-            except Exception as e:
-                console.print(f"[yellow]Warning: could not map function calls from graph: {e}[/yellow]")
+            except Exception as e: console.print(f"[yellow]Warning: graph call map failed: {e}[/yellow]")
 
-            try:
-                internal_ent = indexer.persistence.get_internal_entanglements()
-                for ent in internal_ent:
-                    caller = ent.get("source")
-                    callee = ent.get("target")
-                    if caller and callee:
-                        if callee not in calls_map.get(caller, {}).get("callees", []):
-                            calls_map.setdefault(caller, {}).setdefault("callees", []).append(callee)
-                        if caller not in calls_map.get(callee, {}).get("callers", []):
-                            calls_map.setdefault(callee, {}).setdefault("callers", []).append(caller)
-            except Exception as e:
-                console.print(f"[yellow]Warning: could not merge SQLite entanglements: {e}[/yellow]")
-
-            # 3. Retrieve functions and analyze dataflow
-            parser = DocstringParser(indexer)
-            df_engine = DataFlowEngine()
-            
-            # Retrieve all symbols (including those without docstrings) for comprehensive analysis
-            all_symbols_res = indexer.query_graph("MATCH (n) WHERE n:Function OR n:Method OR n:Module OR n:Class OR n:Interface OR n:Enum RETURN n.name AS name, labels(n) AS labels, n.file_path AS file, n.file AS file_alt")
+            # 3. Retrieve and analyze functions
+            parser, df_engine = DocstringParser(indexer), DataFlowEngine()
+            all_symbols_res = indexer.query_graph("MATCH (n) WHERE n:Function OR n:Method OR n:Module OR n:Class OR n:Interface OR n:Enum RETURN n.name AS name, labels(n) AS labels, COALESCE(n.file_path, n.file) AS file, COALESCE(n.start_line, n.line) AS line, n.end_line AS end_line")
             
             funcs = parser.get_functions_with_docstrings()
             existing_names = {f["name"] for f in funcs}
-            _EXCLUDED_EXTS = {".md", ".json", ".txt", ".yaml", ".yml", ".lock", ".log", ".toml"}
+            _EXC = {".md", ".json", ".txt", ".yaml", ".yml", ".lock", ".log", ".toml"}
             for item in all_symbols_res:
-                s_name = item.get("name")
-                f_path = (item.get("file") or item.get("file_alt") or "").lower()
-                if s_name and s_name not in existing_names:
-                    if any(f_path.endswith(ext) for ext in _EXCLUDED_EXTS):
-                        continue
-                    funcs.append({
-                        "name": s_name,
-                        "file": item.get("file") or item.get("file_alt"),
-                        "labels": item.get("labels", []),
-                        "docstring": "",
-                        "language": detect_language(f_path)
-                    })
+                s_name, f_path = item.get("name"), (item.get("file") or "").lower()
+                if s_name and s_name not in existing_names and not any(f_path.endswith(ext) for ext in _EXC):
+                    funcs.append({"name": s_name, "file": item.get("file"), "line": item.get("line"), "end_line": item.get("end_line"), "labels": item.get("labels", []), "docstring": "", "language": detect_language(f_path)})
 
-            # Build name resolution maps
-            short_to_qualified: dict = {}
+            short_to_qualified, file_symbols_data = {}, {}
             for f in funcs:
-                fname = f.get("name", "")
-                short_to_qualified[fname.split("/")[-1].split(".")[-1]] = fname
-                short_to_qualified[fname] = fname
-                f_path = f.get("file", "")
-                if f_path:
-                    short_to_qualified[f_path] = fname
+                fn, fp = f.get("name", ""), f.get("file", "")
+                short_to_qualified[fn.split("/")[-1].split(".")[-1]] = fn
+                short_to_qualified[fn] = fn
+                if fp:
+                    short_to_qualified[fp] = fn
+                    file_symbols_data.setdefault(fp, []).append(f)
 
-            _SKIP_CODE_ANALYSIS = {"yaml", "markdown", "toml", "json", "generic"}
+            file_suffixes = {fp.split("/")[-1]: fp for fp in file_symbols_data.keys()}
+            _SKIP = {"yaml", "markdown", "toml", "json", "generic"}
+            
             for f in funcs:
-                name = f.get("name")
-                f_path = f.get("file")
-                labels = f.get("labels", [])
-                
+                name, f_path, labels = f.get("name"), f.get("file"), f.get("labels", [])
                 lang = f.get("language") or detect_language(f_path or "")
                 f["language"] = lang
-                
-                if lang in _SKIP_CODE_ANALYSIS:
-                    f["code_snippet"] = ""
-                    f["variable_states"] = {}
-                    f["flow_paths"] = []
+                if lang in _SKIP:
+                    f["code_snippet"], f["variable_states"], f["flow_paths"] = "", {}, []
                     continue
                 
                 if "Module" in labels:
-                    f["code_snippet"] = ""
-                    full_path = os.path.join(config.repo_path, f_path) if f_path else ""
-                    if full_path and os.path.exists(full_path):
-                         try:
-                             with open(full_path, "r", encoding="utf-8", errors="ignore") as file_obj:
-                                 f["code_snippet"] = file_obj.read()
-                         except Exception: pass
+                    full_p = os.path.join(repo_path, f_path) if f_path else ""
+                    if full_p and os.path.exists(full_p):
+                        try:
+                            with open(full_p, "r", encoding="utf-8", errors="ignore") as fo: f["code_snippet"] = fo.read()
+                        except Exception: f["code_snippet"] = ""
+                    else: f["code_snippet"] = ""
                 else:
                     try:
                         snippet_res = indexer.get_code_snippet(name)
-                        f["code_snippet"] = snippet_res.get("code") or ""
-                    except Exception:
-                        f["code_snippet"] = ""
-                
+                        code = snippet_res.get("code") or ""
+                        if not code and f.get("line") and f.get("end_line") and f_path:
+                            full_p = os.path.join(repo_path, f_path)
+                            if os.path.exists(full_p):
+                                with open(full_p, "r", encoding="utf-8", errors="ignore") as fo:
+                                    lns = fo.readlines(); start, end = int(f["line"]) - 1, int(f["end_line"])
+                                    code = "".join(lns[start:end])
+                        f["code_snippet"] = code
+                    except Exception: f["code_snippet"] = ""
+
                 df_res = df_engine.analyze_snippet(f["code_snippet"], lang)
-                f["variable_states"] = df_res.get("variable_states", {})
-                f["flow_paths"] = df_res.get("flow_paths", [])
-                f["dataflow"] = df_res.get("raw_atoms", [])  # Persist raw atoms for behavior mapping
+                f["variable_states"], f["flow_paths"], f["dataflow"] = df_res.get("variable_states", {}), df_res.get("flow_paths", []), df_res.get("raw_atoms", [])
 
-                # Merge Synthesized Calls
-                for sync_call in df_res.get("synthesized_calls", []):
-                    verb = sync_call.get("verb")
-                    hint = sync_call.get("resolved_hint")
-                    if hint:
-                        target_node = None
-                        clean_hint = hint.replace("{", "").replace("}", "").strip("'\" ")
-                        for potential in funcs:
-                            if clean_hint in potential.get("name", ""):
-                                target_node = potential.get("name")
-                                break
-                        final_target = target_node or f"[{verb}] {hint}"
-                        
-                        # Capture constraints for transition labels
-                        constraints = sync_call.get("constraints", [])
-                        condition = ", ".join(constraints) if constraints else None
+                for atom in f["dataflow"]:
+                    atype = atom.get("type")
+                    if atype not in ("synthesized_call", "sink"): continue
+                    tnode, verb = None, atom.get("verb") or atom.get("sink")
+                    if atype == "synthesized_call":
+                        hint = atom.get("resolved_hint")
+                        if hint:
+                            ch = os.path.normpath(hint.replace("{","").replace("}","").strip("'\" /").replace("\\","/"))
+                            if ch in short_to_qualified: tnode = short_to_qualified[ch]
+                            else:
+                                for sq in short_to_qualified.keys():
+                                    sq_norm = os.path.normpath(sq)
+                                    if sq_norm.endswith(ch) or ch.endswith(sq_norm) or ch in sq_norm: tnode = short_to_qualified[sq]; break
+                                if not tnode:
+                                    hb = ch.split("/")[-1]
+                                    if hb in file_suffixes: tnode = file_suffixes[hb]
+                        ft = tnode or f"[{verb}] {atom.get('raw_path')}"
+                    else:
+                        sn = atom.get("sink")
+                        if sn in short_to_qualified: tnode = short_to_qualified[sn]
+                        ft = tnode or f"[{sn}] {atom.get('args', '')}"
+                    
+                    cond = ", ".join(atom.get("constraints", [])) or None
+                    if (ft, cond) not in calls_map.get(name, {}).get("callees_detailed", []):
+                        calls_map.setdefault(name, {}).setdefault("callees_detailed", []).append((ft, cond))
+                        calls_map.setdefault(name, {}).setdefault("callees", []).append(ft)
+                    if name not in calls_map.get(ft, {}).get("callers", []): calls_map.setdefault(ft, {}).setdefault("callers", []).append(name)
 
-                        if (final_target, condition) not in calls_map.get(name, {}).get("callees_detailed", []):
-                            calls_map.setdefault(name, {}).setdefault("callees_detailed", []).append((final_target, condition))
-                            calls_map.setdefault(name, {}).setdefault("callees", []).append(final_target)
-                        
-                        if name not in calls_map.get(final_target, {}).get("callers", []):
-                            calls_map.setdefault(final_target, {}).setdefault("callers", []).append(name)
-                        if name not in calls_map.get(final_target, {}).get("callers", []):
-                            calls_map.setdefault(final_target, {}).setdefault("callers", []).append(name)
-
-            # 4. Semantic neighbors & potential energy
-            semantic_neighbors = {}
-            _func_embeddings: dict = {}
+            # 4. Neighbors & PE
+            semantic_neighbors, _func_embeddings = {}, {}
             try:
-                embedder = Embedder()
                 genomes = [DocstringParser.build_genome(f) for f in funcs]
                 if genomes:
-                    embeddings = embedder.embed(genomes)
+                    embs = embedder.embed(genomes)
                     for i, f in enumerate(funcs):
-                        fname = f.get("name")
-                        _func_embeddings[fname] = embeddings[i]
-                        similarities = []
-                        for j, f_other in enumerate(funcs):
-                            if i == j: continue
-                            sim = Embedder.cosine_similarity(embeddings[i], embeddings[j])
-                            similarities.append((f_other.get("name"), sim))
-                        similarities.sort(key=lambda x: x[1], reverse=True)
-                        semantic_neighbors[fname] = similarities[:3]
-            except Exception as e:
-                console.print(f"[yellow]Warning: could not calculate semantic neighbors: {e}[/yellow]")
+                        fn = f.get("name"); _func_embeddings[fn] = embs[i]; sims = []
+                        for j, fo in enumerate(funcs):
+                            if i != j: sims.append((fo.get("name"), Embedder.cosine_similarity(embs[i], embs[j])))
+                        sims.sort(key=lambda x: x[1], reverse=True); semantic_neighbors[fn] = sims[:3]
+            except Exception as e: console.print(f"[yellow]Warning: semantic neighbors failed: {e}[/yellow]")
 
             if _pe_mostly_zero and _func_embeddings:
                 console.print("[dim]Computing potential energy inline...[/dim]")
                 try:
-                    scorer = QuantumScorer(config, indexer)
-                    nodes_for_pe = []
+                    scorer = QuantumScorer(config, indexer); nodes_pe = []
                     for f in funcs:
-                        fname = f.get("name")
-                        emb = _func_embeddings.get(fname)
-                        if emb is None: continue
-                        node = FunctionNode(
-                            name=fname, embedding=emb,
-                            complexity=float(f.get("complexity", 1.0) or 1.0),
-                            side_effects=float(f.get("sideEffects", 0.0) or 0.0),
-                            is_exported=bool(f.get("isExported", False)),
-                            file=f.get("file", ""),
-                            line=int(f.get("line", 0) or 0),
-                        )
-                        nodes_for_pe.append(node)
-                    scorer.run_simulation(nodes_for_pe, iterations=30)
-                    for node in nodes_for_pe:
-                        if node.name in cognitive_info:
-                            cognitive_info[node.name]["potential_energy"] = node.potential_energy
-                            cognitive_info[node.name]["archetype"] = node.quantum_state
-                        else:
-                            cognitive_info[node.name] = {
-                                "mass": node.mass, "potential_energy": node.potential_energy,
-                                "archetype": node.quantum_state,
-                            }
-                    scorer.write_physics_to_graph(nodes_for_pe)
-                except Exception as e:
-                    console.print(f"[yellow]Warning: inline PE computation failed: {e}[/yellow]")
+                        fn, emb = f.get("name"), _func_embeddings.get(f.get("name"))
+                        if emb is not None: nodes_pe.append(FunctionNode(name=fn, embedding=emb, complexity=float(f.get("complexity", 1.0) or 1.0), side_effects=float(f.get("sideEffects", 0.0) or 0.0), is_exported=bool(f.get("isExported", False)), file=f.get("file", ""), line=int(f.get("line", 0) or 0)))
+                    scorer.run_simulation(nodes_pe, iterations=30)
+                    for n in nodes_pe:
+                        if n.name in cognitive_info: cognitive_info[n.name]["potential_energy"], cognitive_info[n.name]["archetype"] = n.potential_energy, n.quantum_state
+                        else: cognitive_info[n.name] = {"mass": n.mass, "potential_energy": n.potential_energy, "archetype": n.quantum_state}
+                    scorer.write_physics_to_graph(nodes_pe)
+                except Exception as e: console.print(f"[yellow]Warning: PE computation failed: {e}[/yellow]")
 
-            # 5. Vulnerability Scan
-            console.print("Running security vulnerability scans...")
+            # 5. security/audits
             vulnerabilities = []
-            rules_list = []
-            for f in funcs:
-                parsed_genome = parser.parse_genome(f)
-                for r in parsed_genome.get("business_rules", []):
-                    desc = r.lower()
-                    category = "generic"
-                    if any(kw in desc for kw in ["auth", "permission"]): category = "authorization"
-                    elif any(kw in desc for kw in ["event", "log"]): category = "event"
-                    elif any(kw in desc for kw in ["read", "write", "file", "db", "query"]): category = "io"
-                    elif any(kw in desc for kw in ["validate", "check"]): category = "validation"
-                    rules_list.append({"source_function": f.get("name"), "category": category, "description": r})
-
             try:
-                scanner = VulnerabilityScanner(indexer)
-                scanner_funcs = []
+                rules_list = []
                 for f in funcs:
-                    sf = f.copy()
-                    sf["mass"] = cognitive_info.get(f.get("name"), {}).get("mass", 1.0)
-                    sf["business_score"] = 0.5
-                    scanner_funcs.append(sf)
-                scanner.set_data(scanner_funcs, rules_list)
-                raw_vulns = scanner.run_all_scans()
+                    for r in parser.parse_genome(f).get("business_rules", []):
+                        desc, cat = r.lower(), "generic"
+                        if any(kw in desc for kw in ["auth", "permission"]): cat = "authorization"
+                        elif any(kw in desc for kw in ["event", "log"]): cat = "event"
+                        elif any(kw in desc for kw in ["read", "write", "file", "db", "query"]): cat = "io"
+                        elif any(kw in desc for kw in ["validate", "check"]): cat = "validation"
+                        rules_list.append({"source_function": f.get("name"), "category": cat, "description": r})
+                scanner = VulnerabilityScanner(indexer); scanner_f = []
+                for f in funcs:
+                    sf = f.copy(); sf["mass"] = cognitive_info.get(f.get("name"), {}).get("mass", 1.0); sf["business_score"] = 0.5; scanner_f.append(sf)
+                scanner.set_data(scanner_f, rules_list); raw_vulns = scanner.run_all_scans()
                 for rv in raw_vulns:
-                    v_msg = rv.get("description") or rv.get("message")
-                    vulnerabilities.append({
-                        "cwe": rv.get("cwe", "CWE-Unknown"),
-                        "severity": rv.get("severity", "LOW"),
-                        "function": rv.get("function"),
-                        "description": v_msg,
-                        "message": v_msg
-                    })
-            except Exception as e:
-                console.print(f"[yellow]Warning: could not run security scanner: {e}[/yellow]")
+                    msg = rv.get("description") or rv.get("message")
+                    vulnerabilities.append({"cwe": rv.get("cwe", "CWE-Unknown"), "severity": rv.get("severity", "LOW"), "function": rv.get("function"), "description": msg, "message": msg})
+            except Exception as e: console.print(f"[yellow]Warning: security scanner failed: {e}[/yellow]")
 
-            # Systemic Audit
-            entrypoints = []
             try:
-                system_auditor = SystemicAuditor(indexer, calls_map, funcs)
-                finder = EntrypointFinder(repo_path)
-                entrypoints = finder.find_entrypoints()
-                
-                mapped_entrypoints = []
-                for ep in entrypoints:
-                    ep_path = ep.get("file", "")
-                    q_name = short_to_qualified.get(ep_path) or next((f.get("name") for f in funcs if f.get("file") == ep_path), ep.get("name"))
-                    if q_name:
-                        mapped_entrypoints.append({"name": q_name, "file": ep_path})
-                
-                systemic_findings = system_auditor.audit_all_entrypoints(mapped_entrypoints)
-                for sf in systemic_findings:
-                    v_desc = f"Global flow: {sf['path']} -> {sf['sink']} ({sf['variable']})"
-                    vulnerabilities.append({
-                        "cwe": "CWE-Global", "severity": sf["severity"],
-                        "function": sf["path"].split(" -> ")[0],
-                        "description": v_desc, "message": v_desc
-                    })
-            except Exception as e:
-                console.print(f"[yellow]Warning: systemic audit failed: {e}[/yellow]")
+                system_auditor = SystemicAuditor(indexer, calls_map, funcs); finder = EntrypointFinder(repo_path)
+                mapped_ep = []
+                for ep in finder.find_entrypoints():
+                    ep_p = ep.get("file", ""); qn = short_to_qualified.get(ep_p) or next((f.get("name") for f in funcs if f.get("file") == ep_p), ep.get("name"))
+                    if qn: mapped_ep.append({"name": qn, "file": ep_p})
+                for sf in system_auditor.audit_all_entrypoints(mapped_ep):
+                    desc = f"Global flow: {sf['path']} -> {sf['sink']} ({sf['variable']})"
+                    vulnerabilities.append({"cwe": "CWE-Global", "severity": sf["severity"], "function": sf["path"].split(" -> ")[0], "description": desc, "message": desc})
+            except Exception as e: console.print(f"[yellow]Warning: systemic audit failed: {e}[/yellow]")
 
-            # Standardize for Obsidian links
-            for v in vulnerabilities:
-                v["safe_link"] = engine._get_safe_filename(v.get("function", "unknown"))
+            for v in vulnerabilities: v["safe_link"] = engine._get_safe_filename(v.get("function", "unknown"))
 
             # 6. Export
             console.print("Exporting enriched vault...")
-            all_warnings = []
-            file_symbols_data = {}  # Collect data for holistic file export
-
+            all_w, all_s_map = [], {}
             for f in funcs:
-                name = f.get("name")
-                f_path = f.get("file")
-                parsed_genome = parser.parse_genome(f)
-                if parsed_genome.get("warnings"):
-                    all_warnings.append({"name": name, "file": parsed_genome.get("file"), "warnings": parsed_genome.get("warnings")})
-                
-                symbol_vulns = [v for v in vulnerabilities if str(v.get("function")).strip() == str(name).strip()]
-                start_l = f.get("line")
-                end_l = f.get("end_line")
-                line_range = [int(start_l), int(end_l)] if (start_l is not None and end_l is not None) else None
-
+                name, f_path = f.get("name"), f.get("file"); pg = parser.parse_genome(f)
+                if pg.get("warnings"): all_w.append({"name": name, "file": pg.get("file"), "warnings": pg.get("warnings")})
+                sv = [v for v in vulnerabilities if str(v.get("function")).strip() == str(name).strip()]
                 labels = f.get("labels", [])
-                _kind_priority = ["Class", "Interface", "Enum", "Variable", "Method", "Function", "Module"]
-                symbol_kind = next((k for k in _kind_priority if k in labels), "Function")
-
-                symbol_data = {
-                    "name": name, "language": f.get("language") or "generic", "file": f_path,
-                    "kind": symbol_kind,
-                    "signature": f.get("signature") or name, "docstring": f.get("docstring"),
-                    "params": parsed_genome.get("params", []), "returns": parsed_genome.get("returns", {}),
-                    "business_rules": parsed_genome.get("business_rules", []), "code_snippet": f.get("code_snippet"),
-                    "mass": cognitive_info.get(name, {}).get("mass", 1.0),
-                    "potential_energy": cognitive_info.get(name, {}).get("potential_energy", 0.0),
-                    "archetype": cognitive_info.get(name, {}).get("archetype", "generic"),
-                    "semantic_neighbors": semantic_neighbors.get(name, []),
-                    "callers": calls_map.get(name, {}).get("callers", []), "callees": calls_map.get(name, {}).get("callees", []),
-                    "vulnerabilities": symbol_vulns, "line": int(start_l) if start_l is not None else None,
-                    "line_range": line_range, "variable_states": f.get("variable_states", {}), "flow_paths": f.get("flow_paths", [])
+                skind = next((k for k in ["Class", "Interface", "Enum", "Variable", "Method", "Function", "Module"] if k in labels), "Function")
+                sd = {
+                    "name": name, "language": f.get("language") or "generic", "file": f_path, "kind": skind, "signature": f.get("signature") or name, "docstring": f.get("docstring"), "params": pg.get("params", []), "returns": pg.get("returns", {}), "business_rules": pg.get("business_rules", []), 
+                    "code_snippet": f.get("code_snippet") if skind != "Module" else f"[Full file context available in Files folder: {f_path}]",
+                    "mass": cognitive_info.get(name, {}).get("mass", 1.0), "potential_energy": cognitive_info.get(name, {}).get("potential_energy", 0.0), "archetype": cognitive_info.get(name, {}).get("archetype", "generic"), "semantic_neighbors": semantic_neighbors.get(name, []), "callers": calls_map.get(name, {}).get("callers", []), "callees": calls_map.get(name, {}).get("callees", []), "vulnerabilities": sv, "line": f.get("line"), "line_range": [int(f.get("line", 0) or 0), int(f.get("end_line", 0) or 0)], "variable_states": f.get("variable_states", {}), "flow_paths": f.get("flow_paths", []), "members": []
                 }
-                
-                # Noise reduction: only export Class-level symbols individually
-                if symbol_kind in ["Class", "Interface", "Enum"]:
-                    engine.export_symbol(symbol_data)
-                
-                # Store for holistic file documentation
-                if f_path:
-                    file_symbols_data.setdefault(f_path, []).append(symbol_data)
+                all_s_map[name] = sd
 
-            # File mappings
-            files_map = {}
-            for f in funcs:
-                f_path = f.get("file")
-                if f_path: files_map.setdefault(f_path, []).append(f)
-            
-            for f_path, file_funcs in files_map.items():
-                lang = file_funcs[0].get("language") or "generic"
-                symbols_list = [fn.get("name") for fn in file_funcs if fn.get("name")]
-                size_bytes = 0
-                lines_of_code = 0
-                full_path = f_path if os.path.isabs(f_path) else os.path.join(repo_path, f_path)
-                full_path = os.path.normpath(full_path)
-                if not os.path.exists(full_path):
-                    fallback_path = os.path.join(repo_path, os.path.basename(f_path))
-                    if os.path.exists(fallback_path):
-                        full_path = fallback_path
+            for name, sd in all_s_map.items():
+                k, fp = sd.get("kind"), sd.get("file")
+                if k in ["Method", "Variable", "Function"] and fp:
+                    for other in file_symbols_data.get(fp, []):
+                        oname = other.get("name")
+                        if oname in all_s_map and all_s_map[oname].get("kind") in ["Class", "Interface", "Enum"] and oname != name:
+                            if all_s_map[oname].get("line_range") and sd.get("line"):
+                                start, end = all_s_map[oname]["line_range"]
+                                if start <= int(sd["line"]) <= end: all_s_map[oname]["members"].append(sd); break
+
+            for name, sd in all_s_map.items():
+                if sd.get("kind") in ["Class", "Interface", "Enum"]: engine.export_symbol(sd)
+                elif sd.get("kind") != "Module": engine.export_symbol(sd, subdirectory="granular")
+
+            for fp, f_syms in file_symbols_data.items():
+                lang = f_syms[0].get("language") or "generic"
+                size, loc = 0, 0
+                full_p = os.path.normpath(fp if os.path.isabs(fp) else os.path.join(repo_path, fp))
+                if not os.path.exists(full_p):
+                    fb = os.path.join(repo_path, os.path.basename(fp))
+                    if os.path.exists(fb): full_p = fb
                     else:
-                        # Recursively search for the filename under repo_path
-                        fname = os.path.basename(f_path)
-                        for root, _, files in os.walk(repo_path):
-                            if fname in files:
-                                full_path = os.path.join(root, fname)
-                                break
-                if os.path.exists(full_path):
+                        fname = os.path.basename(fp)
+                        for r, _, fs in os.walk(repo_path):
+                            if fname in fs: full_p = os.path.join(r, fname); break
+                if os.path.exists(full_p):
                     try:
-                        with open(full_path, "r", encoding="utf-8", errors="ignore") as file_obj:
-                            lines_of_code = len(file_obj.readlines())
-                        size_bytes = os.path.getsize(full_path)
+                        with open(full_p, "r", encoding="utf-8", errors="ignore") as fo: loc = len(fo.readlines())
+                        size = os.path.getsize(full_p)
                     except Exception: pass
-                file_var_states = {}
-                for fn in file_funcs: file_var_states.update(fn.get("variable_states", {}))
-                engine.export_file({
-                    "file_path": f_path, 
-                    "language": lang, 
-                    "lines_of_code": lines_of_code, 
-                    "size_bytes": size_bytes, 
-                    "symbols": symbols_list, 
-                    "symbols_data": file_symbols_data.get(f_path, []),  # Holistic awareness
-                    "variable_states": file_var_states
-                })
+                
+                fvs = {}
+                for s in f_syms: fvs.update(all_s_map.get(s.get("name"), {}).get("variable_states", {}))
+                lsd = [{"name": s.get("name"), "kind": all_s_map.get(s.get("name"), {}).get("kind"), "signature": all_s_map.get(s.get("name"), {}).get("signature"), "docstring": s.get("docstring"), "business_rules": all_s_map.get(s.get("name"), {}).get("business_rules", []), "flow_paths": all_s_map.get(s.get("name"), {}).get("flow_paths", [])} for s in f_syms]
+                engine.export_file({"file_path": fp, "language": lang, "lines_of_code": loc, "size": size, "symbols": [s.get("name") for s in f_syms], "symbols_data": lsd, "variable_states": fvs})
 
+            for ep in mapped_ep:
+                model = engine.generate_behavior_model(ep["name"], ep["file"], calls_map, funcs, all_s_map)
+                engine.export_behavior(model)
 
-            # Reports
-            engine.export_warnings(all_warnings)
+            engine.export_warnings(all_w)
             engine.export_vulnerabilities(vulnerabilities)
-            
-            # Hotspots & Archetypes
-            complexity_hotspots = sorted([{"name": k, "mass": v["mass"], "archetype": v["archetype"]} for k, v in cognitive_info.items()], key=lambda x: x["mass"], reverse=True)[:10]
-            attention_hotspots = sorted([{"name": k, "potential_energy": v["potential_energy"], "archetype": v["archetype"]} for k, v in cognitive_info.items()], key=lambda x: x["potential_energy"], reverse=True)[:10]
-            engine.export_hotspots({"complexity": complexity_hotspots, "attention": attention_hotspots})
-            
-            archetype_groups = {}
-            for k, v in cognitive_info.items():
-                arch = v["archetype"]
-                symbol_brief = {"name": k, "mass": v["mass"], "potential_energy": v["potential_energy"], "variable_states": next((f.get("variable_states", {}) for f in funcs if f.get("name") == k), {}), "flow_paths": next((f.get("flow_paths", []) for f in funcs if f.get("name") == k), []), "confidence": 0.95}
-                archetype_groups.setdefault(arch, []).append(symbol_brief)
-            
-            engine.export_archetypes(archetype_groups)
-            for arch, symbols in archetype_groups.items(): engine.export_narrative(arch, symbols)
+            engine.export_hotspots({"complexity": sorted([{"name": k, "mass": v["mass"], "archetype": v["archetype"], "file": v.get("file", "unknown")} for k, v in cognitive_info.items()], key=lambda x: x["mass"], reverse=True)[:10], "attention": sorted([{"name": k, "potential_energy": v["potential_energy"], "archetype": v["archetype"], "file": v.get("file", "unknown")} for k, v in cognitive_info.items()], key=lambda x: x["potential_energy"], reverse=True)[:10]})
+            ag = {}
+            for k, v in cognitive_info.items(): ag.setdefault(v["archetype"], []).append({"name": k, "mass": v["mass"], "potential_energy": v["potential_energy"]})
+            engine.export_archetypes(ag)
+            engine.export_branch_diff(branch_diff.compare_branches(branch_diff.get_default_branch(), "HEAD"))
 
-            # Behaviors
-            if not entrypoints:
-                try:
-                    finder = EntrypointFinder(repo_path)
-                    entrypoints = finder.find_entrypoints()
-                except Exception as e:
-                    console.print(f"[yellow]Warning: entrypoint detection failed: {e}[/yellow]")
-            if not entrypoints:
-                entrypoints = []
-
-            sym_meta = {}
-            for f in funcs:
-                name = f.get("name")
-                cog = cognitive_info.get(name, {})
-                sym_meta[name] = {"params": f.get("params", []), "returns": f.get("returns", {}), "docstring": f.get("docstring") or "", "potential_energy": cog.get("potential_energy", 0.0), "archetype": cog.get("archetype", "generic"), "variable_states": f.get("variable_states", {}), "flow_paths": f.get("flow_paths", [])}
-
-            max_depth = config.data.get("behavior_max_depth", 10)
-            max_states = config.data.get("behavior_max_states", 50)
-            for ep in entrypoints:
-                ep_short = ep.get("name", "main")
-                ep_path = ep.get("file", "")
-                ep_func = short_to_qualified.get(ep_path) or next((f.get("name") for f in funcs if f.get("file") == ep_path), ep_short)
-                behavior_data = engine.generate_behavior_model(ep_func, ep_path, calls_map, funcs, sym_meta, max_depth, max_states)
-                engine.export_behavior(behavior_data)
-
-            # Branch Diff
-            try:
-                embedder = Embedder()
-                diff_tool = BranchDiff(config, embedder)
-                base_branch = config.data.get("branch_diff", {}).get("base_branch") or diff_tool.get_default_branch()
-                diff_summary = diff_tool.compare_branches("HEAD", base_branch)
-                engine.export_branch_diff(diff_summary)
-            except Exception: pass
-
-            console.print("[green]Obsidian Vault synchronized successfully![/green]")
-
+        console.print("[green]Obsidian Vault synchronized successfully![/green]")
     except Exception as e:
-        console.print(f"[red]Error during librarian sync:[/red] {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        console.print(f"[red]Error during library sync: {e}[/red]")
+        logger.exception("Library sync failed")

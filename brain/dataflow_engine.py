@@ -46,7 +46,7 @@ class DataFlowEngine:
         Builds a rich dataflow and structural model from a code snippet.
         """
         if not code:
-            return {"variable_states": {}, "flow_paths": [], "synthesized_calls": []}
+            return {"variable_states": {}, "flow_paths": [], "synthesized_calls": [], "raw_atoms": []}
             
         lang = language.lower()
         var_states = {} # var_name -> {state, type, source, properties: {}, constraints: []}
@@ -58,10 +58,6 @@ class DataFlowEngine:
         if lang == "php":
             raw_atoms = php.extract_dataflow(code)
         
-        # 2. Extract Constraints (Conditions) - still generic for now
-        # 2. Constraints mapping is now handled via block scope tracking in Step 3
-        constraints_map = {} # Legacy, keeping for backwards compatibility if needed elsewhere
-
         # 3. Process Atoms
         active_constraints = []
         constraint_stack = []
@@ -71,17 +67,11 @@ class DataFlowEngine:
             a_type = atom.get("type")
             
             if a_type == "condition":
-                # Filter out pure loop conditions from the "environmental invariants" stack
                 is_loop = atom.get("verb") in ("for", "foreach")
                 cond_content = atom["content"]
                 if len(cond_content) > 200: cond_content = cond_content[:197] + "..."
-                
-                # We still want 'while' as it's often a security check
-                if not is_loop:
-                    last_cond = cond_content
-                
-                if not last_cond and atom["verb"] == "else":
-                    last_cond = "else branch"
+                if not is_loop: last_cond = cond_content
+                if not last_cond and atom["verb"] == "else": last_cond = "else branch"
             
             elif a_type == "delimiter":
                 if atom["value"] == "{":
@@ -89,144 +79,77 @@ class DataFlowEngine:
                         constraint_stack.append(last_cond)
                         last_cond = None
                 elif atom["value"] == "}":
-                    if constraint_stack:
-                        constraint_stack.pop()
+                    if constraint_stack: constraint_stack.pop()
             
             active_constraints = list(set(constraint_stack))
-            if last_cond:
-                 active_constraints.append(last_cond)
+            if last_cond: active_constraints.append(last_cond)
 
             if a_type == "global_state":
                 var = atom["variable"]
-                var_states[var] = {
-                    "state": "GLOBAL_STATE",
-                    "type": "dynamic",
-                    "source": atom["source"],
-                    "constraints": list(set(constraints_map.get(var, []) + active_constraints))
-                }
+                var_states[var] = {"state": "GLOBAL_STATE", "type": "dynamic", "source": atom["source"], "constraints": list(active_constraints)}
             
             elif a_type == "assignment":
-                var_raw = atom["variable"]
-                val_raw = atom["value"]
-                
-                # Base variable resolution
+                var_raw, val_raw = atom["variable"], atom["value"]
                 base_var = var_raw
                 prop_name = None
                 if "->" in var_raw:
                     parts = var_raw.split("->", 1)
-                    base_var = parts[0]
-                    prop_name = parts[1]
+                    base_var, prop_name = parts[0], parts[1]
                 elif "[" in var_raw:
                     parts = var_raw.split("[", 1)
-                    base_var = parts[0]
-                    prop_name = parts[1].strip("]'\" ")
+                    base_var, prop_name = parts[0], parts[1].strip("]'\" ")
 
                 if base_var not in var_states:
-                    var_states[base_var] = {
-                        "state": "CONSTANT",
-                        "type": "unknown",
-                        "source": "internal",
-                        "properties": {},
-                        "constraints": list(set(constraints_map.get(base_var, []) + active_constraints))
-                    }
+                    var_states[base_var] = {"state": "CONSTANT", "type": "unknown", "source": "internal", "properties": {}, "constraints": list(active_constraints)}
 
                 inferred_type = self._infer_type(val_raw)
-                if base_var == var_raw:
-                    var_states[base_var]["type"] = inferred_type
+                if base_var == var_raw: var_states[base_var]["type"] = inferred_type
                 else:
-                    var_states[base_var]["properties"][prop_name] = {
-                        "type": inferred_type,
-                        "value_hint": val_raw[:50]
-                    }
-                    if var_states[base_var]["type"] == "unknown":
-                        var_states[base_var]["type"] = "array" if "[" in var_raw else "object"
+                    var_states[base_var]["properties"][prop_name] = {"type": inferred_type, "value_hint": val_raw[:50]}
+                    if var_states[base_var]["type"] == "unknown": var_states[base_var]["type"] = "array" if "[" in var_raw else "object"
 
                 # Security Logic
-                state = var_states[base_var]["state"]
-                source = var_states[base_var]["source"]
-                
+                state, source = var_states[base_var]["state"], var_states[base_var]["source"]
                 is_tainted = any(s in val_raw for s in ["$_GET", "$_POST", "$_REQUEST", "$_COOKIE", "$_SERVER"])
                 is_sanitized = any(re.search(san, val_raw, re.IGNORECASE) for san in self.SANITIZERS.get(lang, []))
                 
                 if is_tainted:
                     state = "TAINTED"
                     source = next((s for s in ["$_GET", "$_POST", "$_REQUEST", "$_COOKIE", "$_SERVER"] if s in val_raw), "external")
-                if is_sanitized:
-                    state = "SAFE"
+                if is_sanitized: state = "SAFE"
                     
                 # Inheritance
-                for existing_var, existing_data in var_states.items():
-                    if existing_var == base_var: continue
-                    escaped_var = re.escape(existing_var)
-                    pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
-                    if re.search(pattern, val_raw):
-                        if existing_data["state"] == "TAINTED" and state != "SAFE":
-                            state = "TAINTED"
-                            source = existing_data["source"]
-                        elif existing_data["state"] == "SAFE":
+                for ex_var, ex_data in var_states.items():
+                    if ex_var == base_var: continue
+                    if re.search(fr"(?<![\w\$]){re.escape(ex_var)}(?![\w\$])", val_raw):
+                        if ex_data["state"] == "TAINTED" and state != "SAFE":
+                            state, source = "TAINTED", ex_data["source"]
+                        elif ex_data["state"] == "SAFE":
                             state = "SAFE"
-                            if existing_data["source"] != "internal":
-                                source = existing_data["source"]
+                            if ex_data["source"] != "internal": source = ex_data["source"]
                 
-                var_states[base_var]["state"] = state
-                var_states[base_var]["source"] = source
+                var_states[base_var]["state"], var_states[base_var]["source"] = state, source
 
             elif a_type == "synthesized_call":
-                raw_path = atom["raw_path"]
-                # Resolve variables in path
-                resolved_hint = raw_path
+                raw_path, resolved_hint = atom["raw_path"], atom["raw_path"]
                 for var, data in var_states.items():
-                    if var in raw_path:
-                        # If we have a value hint
-                        props = data.get("properties", {})
-                        if props:
-                            # Try to find if any property looks like a file path
-                            pass 
-                        # Use variable name in hint if value unknown
-                        resolved_hint = resolved_hint.replace(var, f"{{{var}}}")
-                
-                synthesized_calls.append({
-                    "verb": atom["verb"],
-                    "raw_path": raw_path,
-                    "resolved_hint": resolved_hint,
-                    "constraints": list(active_constraints)
-                })
+                    if var in raw_path: resolved_hint = resolved_hint.replace(var, f"{{{var}}}")
+                synthesized_calls.append({"verb": atom["verb"], "raw_path": raw_path, "resolved_hint": resolved_hint, "constraints": list(active_constraints)})
 
             elif a_type == "sink":
-                sink_name = atom["sink"]
-                # Match variables in sink args
-                args = atom["args"]
+                sink_name, args = atom["sink"], atom["args"]
+                # Track constants (like defines) as part of dataflow state mapping
+                if sink_name == "define":
+                    parts = args.split(",", 1)
+                    if len(parts) == 2:
+                        c_name = parts[0].strip().strip("'\"")
+                        c_val = parts[1].strip()
+                        var_states[c_name] = {"state": "CONSTANT", "type": self._infer_type(c_val), "source": "internal", "constraints": list(active_constraints)}
+                
                 for var_name, data in var_states.items():
-                    escaped_var = re.escape(var_name)
-                    pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
-                    if re.search(pattern, args):
-                        # Filter noise
+                    if re.search(fr"(?<![\w\$]){re.escape(var_name)}(?![\w\$])", args):
                         if data["state"] != "CONSTANT" or data["source"] != "internal":
-                            paths.append({
-                                "source": data["source"],
-                                "sink": sink_name,
-                                "variable": var_name,
-                                "state": data["state"],
-                                "type": data["type"]
-                            })
-
-        # 4. Contextual Sinks (Generic)
-        for line in code.splitlines():
-            c_match = re.search(r"(if|while)\s*\((.*?)\)", line)
-            if c_match:
-                ctx_sink = f"{c_match.group(1)}({c_match.group(2)})"
-                for var_name, data in var_states.items():
-                    escaped_var = re.escape(var_name)
-                    pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
-                    if re.search(pattern, line):
-                        if data["state"] != "CONSTANT" or data["source"] != "internal":
-                            paths.append({
-                                "source": data["source"],
-                                "sink": ctx_sink,
-                                "variable": var_name,
-                                "state": data["state"],
-                                "type": data["type"]
-                            })
+                            paths.append({"source": data["source"], "sink": sink_name, "variable": var_name, "state": data["state"], "type": data["type"], "constraints": list(active_constraints)})
 
         return {
             "variable_states": var_states,

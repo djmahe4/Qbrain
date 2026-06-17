@@ -1,9 +1,9 @@
 import os
+from datetime import datetime
 import yaml
 import json
 import time
 import re
-import subprocess
 from typing import Dict, Any, List, Optional, Set
 from contextlib import contextmanager
 from brain.logger import get_logger
@@ -12,890 +12,309 @@ logger = get_logger(__name__)
 
 class LibrarianEngine:
     """
-    Knowledge synchronizer between the memory graph and Obsidian vault.
+    Production-grade Obsidian vault population engine.
     """
-    def __init__(self, repo_path: str, vault_path: str):
+    def __init__(self, repo_path: str, vault_path: str, indexer=None):
         self.repo_path = os.path.abspath(repo_path)
         self.vault_path = os.path.abspath(vault_path)
+        self.indexer = indexer
+        self.last_sync = datetime.now()
         os.makedirs(self.vault_path, exist_ok=True)
         self.lock_file = os.path.join(self.repo_path, ".qbrain.lock")
 
     @contextmanager
     def lock(self, timeout: float = 30.0, retry_interval: float = 1.0):
-        """PID-based file locking to prevent concurrent vault updates."""
-        if not os.path.exists(self.vault_path):
-            os.makedirs(self.vault_path, exist_ok=True)
-            
-        # Fail fast if lock file exists and is owned by the current process
-        if os.path.exists(self.lock_file):
-            try:
-                with open(self.lock_file, "r") as f:
-                    raw = f.read().strip()
-                    if raw:
-                        try:
-                            data = json.loads(raw)
-                            lock_pid = data.get("pid")
-                        except json.JSONDecodeError:
-                            lock_pid = int(raw)
-                        if lock_pid == os.getpid():
-                            raise RuntimeError("Failed to acquire lock: locked by a running process")
-            except RuntimeError:
-                raise
-            except Exception:
-                pass
-
         start_time = time.time()
         acquired = False
         while time.time() - start_time < timeout:
             try:
-                # Try to create lock file atomically
-                with open(self.lock_file, "x") as f:
-                    lock_data = {
-                        "pid": os.getpid(),
-                        "create_time": time.time()
-                    }
-                    f.write(json.dumps(lock_data))
-                acquired = True
-                break
+                with open(self.lock_file, "x") as f: f.write(json.dumps({"pid": os.getpid(), "create_time": time.time()}))
+                acquired = True; break
             except FileExistsError:
-                # Check if lock is stale
-                if self._is_lock_stale():
-                    self._force_release_lock()
-                    continue
+                if self._is_lock_stale(): self._force_release_lock(); continue
                 time.sleep(retry_interval)
-        
-        if not acquired:
-            raise RuntimeError("Failed to acquire lock: locked by a running process")
-            
-        try:
-            yield
-        finally:
-            self._force_release_lock()
+        if not acquired: raise RuntimeError("Failed to acquire lock")
+        try: yield
+        finally: self._force_release_lock()
 
     def _is_lock_stale(self) -> bool:
-        if not os.path.exists(self.lock_file):
-            return True
+        if not os.path.exists(self.lock_file): return True
         try:
-            with open(self.lock_file, "r") as f:
-                raw = f.read().strip()
-                if not raw:
-                    return True
-                
-                pid = None
-                try:
-                    data = json.loads(raw)
-                    if isinstance(data, dict):
-                        pid = data.get("pid")
-                except Exception:
-                    pass
-                
-                if pid is None:
-                    try:
-                        pid = int(raw)
-                    except ValueError:
-                        return True  # Invalid PID format, treat as stale
-            
-            if pid == os.getpid():
-                return False  # Current process is active, not stale
-            
+            with open(self.lock_file, "r") as f: pid = json.loads(f.read().strip()).get("pid")
+            if pid == os.getpid(): return False
             if os.name == "nt":
-                import ctypes
-                PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-                kernel32 = ctypes.windll.kernel32
-                kernel32.OpenProcess.restype = ctypes.c_void_p
-                handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-                if handle:
-                    kernel32.CloseHandle(ctypes.c_void_p(handle))
-                    return False  # process is running, lock is not stale
-                err = kernel32.GetLastError()
-                if err == 5:  # Access Denied means running
-                    return False
-                return True   # not running, stale
+                import ctypes; h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+                if h: ctypes.windll.kernel32.CloseHandle(h); return False
+                return True
             else:
-                try:
-                    os.kill(pid, 0)
-                    return False  # process is running, lock is not stale
-                except OSError as e:
-                    import errno
-                    if e.errno == errno.ESRCH:
-                        return True
-                    return False  # e.g. permission error means process is running
-        except PermissionError:
-            # If locked/busy, the process is active, lock is NOT stale
-            return False
-        except Exception:
-            return True
+                try: os.kill(pid, 0); return False
+                except OSError: return True
+        except Exception: return True
 
     def _force_release_lock(self):
         if os.path.exists(self.lock_file):
-            try:
-                os.remove(self.lock_file)
-            except Exception:
-                pass
+            try: os.remove(self.lock_file)
+            except Exception: pass
 
     def setup_vault(self):
-        """Create standard vault directories."""
-        dirs = [
-            "symbols", "files", "behaviors", "changes", "changes/recent",
-            "changes/archive", "rules", "narratives"
-        ]
-        for d in dirs:
-            os.makedirs(os.path.join(self.vault_path, d), exist_ok=True)
-        baseline_path = os.path.join(self.vault_path, "baseline.md")
-        if not os.path.exists(baseline_path):
-            with open(baseline_path, "w", encoding="utf-8") as f:
-                f.write("# Qbrain Baseline\n")
+        dirs = ["symbols", "files", "behaviors", "changes", "changes/recent", "changes/archive", "rules", "narratives"]
+        for d in dirs: os.makedirs(os.path.join(self.vault_path, d), exist_ok=True)
+        bp = os.path.join(self.vault_path, "baseline.md")
+        if not os.path.exists(bp):
+            with open(bp, "w", encoding="utf-8") as f: f.write("# Qbrain Baseline\n")
 
     def _get_safe_filename(self, name: str) -> str:
-        """Standardized safe naming for all exported entities."""
         safe = re.sub(r"[^a-zA-Z0-9_\-]", "_", name)
-        # Truncate and add hash for uniqueness if long (prevents Mermaid ID overflow)
         if len(safe) > 60:
-            import hashlib
-            h = hashlib.md5(name.encode()).hexdigest()[:6]
+            import hashlib; h = hashlib.md5(name.encode()).hexdigest()[:6]
             return f"{safe[:50]}_{h}"
         return safe
-    def _sanitize_for_table(self, text: str) -> str:
-        """Sanitizes text for use in a markdown table cell."""
-        if not text: return "—"
-        # Replace newlines with <br>, escape pipes
-        s = str(text).replace("\n", "<br>").replace("|", "\\|")
-        return s
 
+    def _sanitize_for_table(self, text: str) -> str:
+        if not text: return "—"
+        return str(text).replace("\n", "<br>").replace("|", "\\|")
 
     def _get_semantic_state_label(self, state: str) -> str:
-        """Translates technical/raw states into semantic labels with strict truncation."""
         if not state: return "unknown"
-        
-        # 1. Handle synthesized calls from dataflow
-        if state.startswith("[include]"):
-            path = state.replace("[include]", "").strip()
-            # Clean up complex PHP concats
-            path = re.sub(r"\s*\.\s*", " + ", path)
-            return f"Include: {path[:70]}..." if len(path) > 70 else f"Include: {path}"
-        if state.startswith("[require]"):
-            path = state.replace("[require]", "").strip()
-            path = re.sub(r"\s*\.\s*", " + ", path)
-            return f"Require: {path[:70]}..." if len(path) > 70 else f"Require: {path}"
-            
-        # 2. Handle common sinks
+        clean = state.strip()
         sinks = {
-            "echo": "Render Output",
-            "print": "Log/Display",
-            "die": "Terminate",
-            "header": "HTTP Redirect",
-            "mysqli_query": "[(DB)] Query",
-            "mysqli_prepare": "[(DB)] Prepare",
-            "mysqli_connect": "[(DB)] Connect",
-            "eval": "🚨 DANGEROUS: Dynamic Eval",
-            "exec": "🚨 DANGEROUS: System Exec",
-            "system": "🚨 DANGEROUS: System Call",
-            "shell_exec": "🚨 DANGEROUS: Shell Exec"
+            "header": "📁 Redirect", "mysqli_query": "[(DB)] Query", "mysqli_prepare": "[(DB)] Prepare",
+            "mysqli_connect": "🔌 Connect", "eval": "🚨 EVAL", "exec": "🚨 EXEC", "system": "🚨 SYSTEM",
+            "shell_exec": "🚨 SHELL", "define": "⚙️ DEF", "dvwapagestartup": "🛡️ SEC-INIT",
+            "dvwadatabaseconnect": "🔌 DB-INIT", "dvwahtmlecho": "🖥️ RENDER", "dvwasecuritylevelget": "🔍 SEC-CHECK",
+            "include": "📁 INC", "require": "📁 REQ", "include_once": "📁 INC-1", "require_once": "📁 REQ-1"
         }
-        
-        for sink, label in sinks.items():
-            if state.startswith(f"[{sink}]"):
-                content = state.replace(f"[{sink}]", "").strip()
-                return f"{label}: {content[:60]}..." if len(content) > 60 else f"{label}: {content}"
-            if state == sink:
-                return label
+        if clean.startswith("[") and "]" in clean:
+            parts = clean.split("]", 1); verb, content = parts[0][1:].lower(), parts[1].strip()
+            label = sinks.get(verb, verb.upper())
+            disp = re.sub(r"['\"\s]", "", content)
+            if len(disp) > 40: disp = disp[:37] + "..."
+            return f"{label}: {disp}" if disp else label
+        low = clean.lower()
+        if low in sinks: return sinks[low]
+        return clean.split("/")[-1] if "/" in clean else clean
 
-        # 3. Default: clean up long paths for display
-        return state.split("/")[-1] if "/" in state else state
     def _safe_path(self, subdir: str, filename: str) -> str:
-        """Sanitize path and ensure it's inside the vault."""
         target = os.path.abspath(os.path.join(self.vault_path, subdir, filename))
-        if not target.startswith(self.vault_path):
-            raise ValueError(f"Path traversal detected (Security Risk): {target}")
+        if not target.startswith(self.vault_path): raise ValueError(f"Path traversal risk")
         return target
 
-    def export_symbol(self, symbol_data: dict):
-        name = symbol_data.get("name")
-        if not name:
-            return
-        if ".." in name or name.startswith("/") or name.startswith("\\"):
-            raise ValueError("Path traversal detected (Security Risk) in symbol name")
+    def export_symbol(self, sd: dict, subdirectory: str = ""):
+        name = sd.get("name")
+        if not name: return
         safe_name = self._get_safe_filename(name)
-        filepath = self._safe_path("symbols", f"{safe_name}.md")
-        kind = symbol_data.get("kind", "Function")
-        
-        frontmatter = {
-            "type": "symbol",
-            "kind": kind,
-            "name": name,
-            "language": symbol_data.get("language"),
-            "file": symbol_data.get("file"),
-            "signature": symbol_data.get("signature"),
-            "mass": symbol_data.get("mass"),
-            "potential_energy": symbol_data.get("potential_energy"),
-            "archetype": symbol_data.get("archetype"),
-            "line": symbol_data.get("line"),
-            "line_range": symbol_data.get("line_range")
-        }
-        
-        # Determine header badge
-        badge = "🔧"
-        if kind == "Class":
-            badge = "🏛️"
-        elif kind == "Interface":
-            badge = "📑"
-        elif kind == "Enum":
-            badge = "🗳️"
-        elif kind == "Variable":
-            badge = "📌"
-        elif kind == "Module":
-            badge = "📦"
-        elif kind == "Method":
-            badge = "⚡"
-
+        dir_p = os.path.join(self.vault_path, "symbols", subdirectory)
+        os.makedirs(dir_p, exist_ok=True); filepath = os.path.join(dir_p, f"{safe_name}.md")
+        kind = sd.get("kind", "Function")
         with open(filepath, "w", encoding="utf-8") as f:
             f.write("---\n")
-            yaml.safe_dump(frontmatter, f, default_flow_style=False)
-            f.write("---\n\n")
-            f.write(f"# {badge} {kind}: {name}\n\n")
-            if symbol_data.get("line") is not None:
-                f.write(f"**Line:** {symbol_data.get('line')}\n\n")
-            if symbol_data.get("docstring"):
-                f.write(f"## Documentation\n{symbol_data.get('docstring')}\n\n")
-            
-            # Data Model & Constraints
-            var_states = symbol_data.get("variable_states", {})
-            flow_paths = symbol_data.get("flow_paths", [])
-            
-            if var_states:
-                f.write("## Data Model & Constraints\n")
-                f.write("| Variable | Type | State | Properties / Constraints |\n")
-                f.write("|:---|:---|:---|:---|\n")
-                for var, data in var_states.items():
-                    state = data.get("state", "CONSTANT")
-                    vtype = data.get("type", "unknown")
-                    
-                    details = []
-                    props = data.get("properties", {})
-                    for p, pdata in props.items():
-                        details.append(f"prop `{p}` ({pdata.get('type')})")
-                    
-                    constraints = data.get("constraints", [])
-                    for c in list(set(constraints)):
-                        details.append(f"check `{c}`")
-                        
-                    details_str = ", ".join(details) if details else "—"
-                    f.write(f"| `{var}` | `{vtype}` | `{state}` | {details_str} |\n")
-                f.write("\n")
-                
-            if flow_paths:
-                f.write("## Dataflow Graph\n")
-                f.write("```mermaid\n")
-                f.write("graph LR\n")
-                for i, path in enumerate(flow_paths):
-                    src = str(path.get("source", "internal")).replace('"', "'")
-                    sink = str(path.get("sink", "unknown")).replace('"', "'")
-                    var = str(path.get("variable", "data")).replace('"', "'")
-                    state = path.get("state", "UNKNOWN")
-                    vtype = path.get("type", "")
-                    label = f"{var}:{vtype} ({state})" if vtype else f"{var} ({state})"
-                    f.write(f'  P{i}_SRC["{src}"] -- "{label}" --> P{i}_SINK["{sink}"]\n')
-                f.write("```\n\n")
+            yaml.safe_dump({"type": "symbol", "kind": kind, "name": name, "language": sd.get("language"), "file": sd.get("file"), "signature": sd.get("signature"), "mass": sd.get("mass"), "potential_energy": sd.get("potential_energy"), "archetype": sd.get("archetype"), "line": sd.get("line"), "line_range": sd.get("line_range")}, f, default_flow_style=False)
+            f.write("---\n\n# " + {"Class":"🏛️","Interface":"🔌","Enum":"📜","Variable":"💎","Module":"📦","Method":"⚡","Function":"λ"}.get(kind, "🔧") + " " + kind + ": " + name + "\n\n")
+            if sd.get("docstring"): f.write(f"> {sd['docstring'].strip()}\n\n")
+            if sd.get("line") is not None: f.write(f"**Line:** {sd.get('line')}\n\n")
+            members = sd.get("members", [])
+            if members:
+                f.write("## Members\n| Member | Kind | Signature |\n|:---|:---|:---|\n")
+                for m in members: f.write(f"| [[{m.get('name')}]] | `{m.get('kind','Method')}` | `{m.get('signature') or m.get('name')}` |\n")
+            vs = sd.get("variable_states", {})
+            if vs:
+                f.write("\n## Data Model & Constraints\n| Variable | Type | State | Details |\n|:---|:---|:---|:---|\n")
+                for v, d in vs.items():
+                    dtl = [f"prop `{p}` ({pd.get('type')})" for p, pd in d.get("properties", {}).items()] + [f"check `{c}`" for c in list(set(d.get("constraints", [])))]
+                    f.write(f"| `{v}` | `{d.get('type','unknown')}` | `{d.get('state','CONSTANT')}` | {', '.join(dtl) if dtl else '—'} |\n")
+            fp = sd.get("flow_paths", [])
+            if fp:
+                f.write("\n## Dataflow Graph\n```mermaid\ngraph LR\n")
+                for i, p in enumerate(fp):
+                    src, snk, var, st, vt = [str(p.get(k, "unknown")).replace('"',"'") for k in ["source", "sink", "variable", "state", "type"]]
+                    lbl = f"{var}:{vt} ({st})" if vt else f"{var} ({st})"
+                    if len(lbl) > 100: lbl = lbl[:97] + "..."
+                    f.write(f'  P{i}_SRC["{src}"] -- "{lbl}" --> P{i}_SINK["{snk}"]\n')
+                f.write("```\n")
+            callers, callees = sd.get("callers", []), sd.get("callees", [])
+            if callers: f.write("\n## Entanglements\n### Inbound Callers\n" + "\n".join([f"- `[[{c}]]`" for c in callers]) + "\n")
+            if callees: f.write("### Outbound Callees\n" + "\n".join([f"- `[[{c}]]`" for c in callees]) + "\n")
+            if sd.get("business_rules"): f.write("\n## Business Rules\n" + "\n".join([f"- {r}" for r in sd["business_rules"]]) + "\n")
+            if sd.get("vulnerabilities"): f.write("\n## Security Findings\n" + "\n".join([f"- **{v.get('severity','LOW')}**: {v.get('message') or v.get('description')}" for v in sd["vulnerabilities"]]) + "\n")
+            snippet = sd.get("code_snippet")
+            if snippet and not snippet.startswith("[Full file context"): f.write(f"\n## Implementation\n```{sd.get('language','generic')}\n{snippet}\n```\n")
 
-            if symbol_data.get("params"):
-                f.write("## Parameters\n")
-                for param in symbol_data.get("params", []):
-                    f.write(f"- `{param.get('name')}` ({param.get('type')}): {param.get('description', '')}\n")
-                f.write("\n")
-            if symbol_data.get("returns"):
-                ret = symbol_data.get("returns")
-                rtype = ret.get("type") if isinstance(ret, dict) else (ret if isinstance(ret, str) else "")
-                f.write(f"## Returns\n`{rtype}`: {ret.get('description', '') if isinstance(ret, dict) else ''}\n\n")
-            
-            if symbol_data.get("semantic_neighbors"):
-                f.write("## Semantic Neighbors\n")
-                for neighbor, sim in symbol_data["semantic_neighbors"]:
-                    f.write(f"- `[[{neighbor}]]` ({sim * 100:.1f}% similarity)\n")
-                f.write("\n")
-            
-            callers = symbol_data.get("callers", [])
-            callees = symbol_data.get("callees", [])
-            if callers or callees:
-                f.write("## Entanglements\n")
-                if callers:
-                    f.write("### Inbound Callers\n")
-                    for caller in callers:
-                        f.write(f"- `[[{caller}]]` \n")
-                if callees:
-                    f.write("### Outbound Callees\n")
-                    for callee in callees:
-                        f.write(f"- `[[{callee}]]` \n")
-                f.write("\n")
-                
-            if symbol_data.get("business_rules"):
-                f.write("## Business Rules\n")
-                for rule in symbol_data.get("business_rules", []):
-                    f.write(f"- {rule}\n")
-                f.write("\n")
-
-            if symbol_data.get("vulnerabilities"):
-                f.write("## Security Findings\n")
-                for vuln in symbol_data.get("vulnerabilities", []):
-                    # For symbol findings, we use message
-                    f.write(f"- **{vuln.get('severity', 'LOW')}**: {vuln.get('message') or vuln.get('description')}\n")
-                f.write("\n")
-
-            if symbol_data.get("code_snippet"):
-                f.write("## Implementation\n")
-                lang = symbol_data.get("language") or "generic"
-                f.write(f"```{lang}\n")
-                f.write(symbol_data["code_snippet"])
-                f.write("\n```\n")
-
-    def export_file(self, file_data: dict):
-        file_path = file_data.get("file_path")
-        if not file_path:
-            return
-        safe_name = self._get_safe_filename(file_path)
-        filepath = self._safe_path("files", f"{safe_name}.md")
-        
-        frontmatter = {
-            "type": "file",
-            "file_path": file_path,
-            "language": file_data.get("language"),
-            "lines_of_code": file_data.get("lines_of_code"),
-            "size_bytes": file_data.get("size_bytes")
-        }
-        
+    def export_file(self, fd: dict):
+        fp = fd.get("file_path")
+        if not fp: return
+        filepath = self._safe_path("files", f"{self._get_safe_filename(fp)}.md")
         with open(filepath, "w", encoding="utf-8") as f:
             f.write("---\n")
-            yaml.safe_dump(frontmatter, f, default_flow_style=False)
-            f.write("---\n\n")
-            f.write(f"# File: {file_path}\n\n")
-            f.write("## Metadata\n")
-            if file_data.get("language"):
-                f.write(f"- **Language:** {file_data.get('language')}\n")
-            if file_data.get("lines_of_code") is not None:
-                f.write(f"- **Lines of Code:** {file_data.get('lines_of_code')}\n")
-            if file_data.get("size_bytes") is not None:
-                f.write(f"- **Size:** {file_data.get('size_bytes')} bytes\n")
-            f.write("\n")
+            yaml.safe_dump(fd, f, default_flow_style=False)
+            f.write("---\n\n# File: " + fp + "\n\n## Metadata\n- **Language:** " + str(fd.get('language')) + "\n- **Lines of Code:** " + str(fd.get('lines_of_code')) + "\n- **Size:** " + str(fd.get('size')) + " bytes\n\n")
+            fvs = fd.get("variable_states", {})
+            if fvs:
+                f.write("## File-Level Data Model\n| Variable | Type | State |\n|:---|:---|:---|\n")
+                for v, d in fvs.items(): f.write(f"| `{v}` | `{d.get('type','unknown')}` | `{d.get('state','CONSTANT')}` |\n")
+            sd = fd.get("symbols_data", [])
+            if sd:
+                f.write("\n## Symbols and Logic\n| Symbol | Kind | Signature | Description |\n|:---|:---|:---|:---|\n")
+                for s in sd: f.write(f"| [[{s.get('name')}]] | `{s.get('kind','Function')}` | `{s.get('signature') or s.get('name')}` | {(s.get('docstring') or '').split('\\n')[0]} |\n")
+                f.write("\n## Business Logic & Requirements\n")
+                for s in sd:
+                    for r in s.get("business_rules", []): f.write(f"- **{s.get('name')}**: {r}\n")
+                f.write("\n## Dataflow & Taint Summary\n| Source | Variable | State | Constraints | Sink |\n|:---|:---|:---|:---|:---|\n")
+                for s in sd:
+                    for p in s.get("flow_paths", []):
+                        cs = ", ".join(p.get("constraints", [])) if p.get("constraints") else "—"
+                        f.write(f"| [[{s.get('name')}]] | `{p.get('variable')}` | `{p.get('state')}` | `{cs}` | `{p.get('sink') or 'internal'}` |\n")
+            syms = fd.get("symbols", [])
+            if syms: f.write("\n## Navigation\n" + "\n".join([f"- [[{s}]]" for s in syms]) + "\n")
 
-            var_states = file_data.get("variable_states", {})
-            if var_states:
-                f.write("## File-Level Data Model\n")
-                f.write("| Variable | Type | State |\n")
-                f.write("|:---|:---|:---|\n")
-                for var, data in var_states.items():
-                    f.write(f"| `{var}` | `{data.get('type', 'unknown')}` | `{data.get('state', 'CONSTANT')}` |\n")
-                f.write("\n")
+    def _make_transition_label(self, clr: str, cle: str, funcs: List[dict], sm: dict) -> str:
+        caller = next((f for f in funcs if f.get("name") == clr), None)
+        if caller:
+            passed, cl_b, drv = [], cle.split(".")[-1], []
+            for fl in caller.get("flow_paths", []):
+                v = fl.get("variable", "")
+                if any(x in v for x in ["$_COOKIE", "$_SESSION", "$_GET['security']"]): drv.append(f"{v}:{fl.get('state')}")
+                if fl.get("sink") and (fl["sink"] == cle or fl["sink"] == cl_b): passed.append(f"{v}:{fl.get('state')}")
+            if drv: return f"[Scenario: {', '.join(list(set(drv)))}]"
+            if passed: return ", ".join(list(set(passed)))
+        meta = sm.get(cle, {})
+        p = (meta.get("params") or [{"name":""}])[0].get("name") or ""
+        r = "→" + str(meta.get("returns", {}).get("type", "")) if meta.get("returns") else ""
+        return f"{p}{r}"
 
-            symbols_data = file_data.get("symbols_data", [])
-            if symbols_data:
-                f.write("## Symbols and Logic\n")
-                f.write("| Symbol | Kind | Signature | Description |\n")
-                f.write("|:---|:---|:---|:---|\n")
-                for s in symbols_data:
-                    name = s.get("name")
-                    kind = s.get("kind", "Function")
-                    sig = s.get("signature") or name
-                    doc = (s.get("docstring") or "").split("\n")[0]
-                    f.write(f"| [[{name}]] | `{kind}` | `{sig}` | {doc} |\n")
-                f.write("\n")
-
-                # Consolidated Business Rules
-                all_rules = []
-                for s in symbols_data:
-                    for rule in s.get("business_rules", []):
-                        all_rules.append(f"- **{s.get('name')}**: {rule}")
-                
-                if all_rules:
-                    f.write("## Business Logic & Requirements\n")
-                    for rule in all_rules:
-                        f.write(f"{rule}\n")
-                    f.write("\n")
-
-                # Aggregate Dataflow & Taint
-                all_flows = []
-                for s in symbols_data:
-                    for flow in s.get("flow_paths", []):
-                        all_flows.append({
-                            "source": s.get("name"),
-                            "variable": flow.get("variable"),
-                            "state": flow.get("state"),
-                            "sink": flow.get("sink")
-                        })
-                
-                if all_flows:
-                    f.write("## Dataflow & Taint Summary\n")
-                    f.write("| Source | Variable | State | Sink |\n")
-                    f.write("|:---|:---|:---|:---|\n")
-                    for flow in all_flows:
-                        f.write(f"| `{flow['source']}` | `{flow['variable']}` | `{flow['state']}` | `{flow['sink'] or 'internal'}` |\n")
-                    f.write("\n")
-
-            symbols = file_data.get("symbols", [])
-            if symbols:
-                f.write("## Navigation\n")
-                for s in symbols:
-                    f.write(f"- [[{s}]]\n")
-                f.write("\n")
-
-
-    def _make_transition_label(self, caller_name: str, callee_name: str, funcs: List[dict], sym_meta: dict) -> str:
-        """Generates a transition label based on dataflow or signature."""
-        caller_obj = next((f for f in funcs if f.get("name") == caller_name), None)
-        if caller_obj:
-            passed_vars = []
-            callee_base = callee_name.split(".")[-1]
-            
-            # Scenario Mapping: Detect Decision Drivers
-            decision_drivers = []
-            
-            for flow in caller_obj.get("flow_paths", []):
-                variable = flow.get("variable", "")
-                # Check for decision drivers in conditions/variables
-                if any(x in variable for x in ["$_COOKIE", "$_SESSION", "$_GET['security']"]):
-                    decision_drivers.append(f"{variable}:{flow.get('state')}")
-
-                sink = flow.get("sink", "")
-                if sink and (sink == callee_name or sink == callee_base):
-                    passed_vars.append(f"{variable}:{flow.get('state')}")
-            
-            # Prioritize decision drivers if they exist
-            if decision_drivers:
-                return f"[Scenario: {', '.join(list(set(decision_drivers)))}]"
-            
-            if passed_vars:
-                return ", ".join(list(set(passed_vars)))
-
-
-        callee_info = sym_meta.get(callee_name, {})
-        params = callee_info.get("params", [])
-        returns = callee_info.get("returns", {})
-        parts = []
-        if params:
-            p = params[0] if isinstance(params[0], dict) else {"name": str(params[0])}
-            ptype = p.get("type") or ""
-            pname = p.get("name") or ""
-            parts.append(f"{pname}:{ptype}" if ptype else pname)
-        if returns:
-            rtype = returns.get("type") if isinstance(returns, dict) else (returns if isinstance(returns, str) else "")
-            if rtype:
-                parts.append(f"→{rtype}")
-        return ", ".join(parts) if parts else ""
-
-    def generate_behavior_model(
-        self, 
-        entrypoint_func: str, 
-        entrypoint_path: str,
-        calls_map: dict, 
-        funcs: List[dict], 
-        sym_meta: dict,
-        max_depth: int = 10,
-        max_states: int = 50
-    ) -> dict:
-        """
-        Builds a macroscopic behavioral model from an entrypoint.
-        """
-        states: set = {entrypoint_func}
-        transitions = []
-        visited: set = {entrypoint_func}
-
-        # Initialize BFS queue with (current, parent, depth, synth_label)
-        # Using detailed callees for entrypoint if available
-        detailed = calls_map.get(entrypoint_func, {}).get("callees_detailed", [])
-        queue = []
-        if detailed:
-            for c, cond in detailed:
-                queue.append((c, entrypoint_func, 1, cond))
-        else:
-            callees_from_map = calls_map.get(entrypoint_func, {}).get("callees", [])
-            for c in callees_from_map:
-                queue.append((c, entrypoint_func, 1, None))
-
+    def generate_behavior_model(self, ep_f: str, ep_p: str, cm: dict, funcs: List[dict], sm: dict, max_d: int = 10, max_s: int = 50) -> dict:
+        states, trans, visited = {ep_f}, [], {ep_f}
+        detailed = cm.get(ep_f, {}).get("callees_detailed", [])
+        queue = [(c, ep_f, 1, cond) for c, cond in detailed] if detailed else [(c, ep_f, 1, None) for c in cm.get(ep_f, {}).get("callees", []).copy()]
         while queue:
-            if len(states) >= max_states:
-                break
-            current, parent, depth, synth_label = queue.pop(0)
-            # Attempt to resolve synthesized names to real nodes for deeper traversal
-            canonical_current = current
-            if current.startswith("[") and "]" in current:
-                # Extract possible path/name from [verb] hint
-                parts = current.split("]", 1)
-                hint = parts[1].strip()
-                clean_hint = hint.replace("{", "").replace("}", "").strip("'\" ")
-                # Try exact match or suffix match
+            if len(states) >= max_s: break
+            curr, par, dep, sl = queue.pop(0); states.add(curr); can = curr
+            if curr.startswith("[") and "]" in curr:
+                hint = curr.split("]", 1)[1].strip().replace("{","").replace("}","").strip("'\" /")
                 for f in funcs:
-                    f_name = f.get("name", "")
-                    if clean_hint == f_name or f_name.endswith(clean_hint) or clean_hint.endswith(f_name):
-                        canonical_current = f_name
-                        break
-            
-            label = synth_label or self._make_transition_label(parent, current, funcs, sym_meta)
-            # Scenario Fork Logic: parent --> decisionNode --> current
-            if label and "[Scenario:" in label:
-                decision_text = label.replace("[Scenario: ", "").rsplit("]", 1)[0].strip()
-                decision_node = f"Decision: {decision_text}"
-                states.add(decision_node)
-                transitions.append({"from": parent, "to": decision_node})
-                transitions.append({"from": decision_node, "to": current})
-            else:
-                transitions.append({"from": parent, "to": current, "condition": label or None})
-            
-            if depth < max_depth:
-                # Determine if we should explore this node's callees
-                # We visit a canonical node only once to avoid cycles,
-                # but we allowed multiple transitions above.
-                if canonical_current not in visited:
-                    visited.add(canonical_current)
-                    
-                    # Get callees for the canonical node
-                    detailed_next = calls_map.get(canonical_current, {}).get("callees_detailed", [])
-                    if detailed_next:
-                        for nc, cond in detailed_next:
-                            queue.append((nc, current, depth + 1, cond))
-                    else:
-                        next_callees = list(calls_map.get(canonical_current, {}).get("callees", []))
-                        for nc in next_callees:
-                            queue.append((nc, current, depth + 1, None))
-
-                    # 2. Inject synthesized calls from dataflow (e.g. includes/requires)
-                    # Use raw atoms from dataflow for on-the-fly injection
-                    current_obj = next((f for f in funcs if f.get("name") == canonical_current), None)
-
-                    if current_obj and "dataflow" in current_obj:
-                        for atom in current_obj["dataflow"]:
-                            if atom.get("type") in ("synthesized_call", "sink"):
-                                if atom.get("type") == "synthesized_call":
-                                    hint = atom.get("resolved_hint") or atom.get("raw_path")
-                                    verb = atom.get("verb", "call")
-                                    synth_name = f"[{verb}] {hint}"
-                                else:
-                                    # It's a sink
-                                    sink_name = atom.get("sink")
-                                    args = atom.get("args", "")
-                                    synth_name = f"[{sink_name}] {args}"
-                                
-                                # Capture constraints for transition label
-                                constraints = atom.get("constraints", [])
-                                label = ", ".join(constraints) if constraints else None
-                                
-                                queue.append((synth_name, current, depth + 1, label))
-
-
-        built_state_meta = {}
+                    fn = f.get("name", "")
+                    if hint == fn or fn.endswith(hint) or hint.endswith(fn): can = fn; break
+            lbl = sl or self._make_transition_label(par, curr, funcs, sm)
+            if lbl and "[Scenario:" in lbl:
+                txt = lbl.replace("[Scenario: ", "").rsplit("]", 1)[0].strip(); node = f"Decision: {txt}"
+                states.add(node); trans.append({"from": par, "to": node}); trans.append({"from": node, "to": curr})
+            else: trans.append({"from": par, "to": curr, "condition": lbl or None})
+            if dep < max_d and can not in visited:
+                visited.add(can); det_next = cm.get(can, {}).get("callees_detailed", [])
+                if det_next:
+                    for nc, cond in det_next: queue.append((nc, curr, dep + 1, cond))
+                else:
+                    for nc in cm.get(can, {}).get("callees", []): queue.append((nc, curr, dep + 1, None))
+        bm = {}
         for s in states:
-            meta = sym_meta.get(s)
-            if not meta:
-                f_match = next((f for f in funcs if f.get("name") == s), None)
-                if f_match:
-                    # Determine archetype from file path or name
-                    f_file = f_match.get("file", "").lower()
-                    arch = "generic"
-                    if any(x in f_file for x in ["db/", "model/", "repository/", "mysqli"]):
-                        arch = "data-repository"
-                    elif any(x in f_file for x in ["api/", "controller/"]):
-                        arch = "api-endpoint"
-                    elif any(x in f_file for x in ["security", "auth", "guard"]):
-                        arch = "security-guard"
-                    elif any(x in f_file for x in ["util", "helper"]):
-                        arch = "utility"
-                    
-                    meta = {
-                        "params": f_match.get("params", []),
-                        "returns": f_match.get("returns", {}),
-                        "docstring": f_match.get("docstring", ""),
-                        "potential_energy": 0.0,
-                        "archetype": arch,
-                        "variable_states": f_match.get("variable_states", {}),
-                        "flow_paths": f_match.get("flow_paths", [])
-                    }
-            
+            m = sm.get(s)
+            if not m:
+                f_m = next((f for f in funcs if f.get("name") == s), None)
+                if f_m:
+                    ff = f_m.get("file", "").lower(); arch = "data-repository" if any(x in ff for x in ["db/", "model/", "repository/", "mysqli"]) else ("api-endpoint" if any(x in ff for x in ["api/", "controller/"]) else ("security-guard" if any(x in ff for x in ["security", "auth", "guard"]) else ("utility" if any(x in ff for x in ["util", "helper"]) else "generic")))
+                    m = {"params": f_m.get("params", []), "returns": f_m.get("returns", {}), "docstring": f_m.get("docstring", ""), "potential_energy": 0.0, "archetype": arch, "variable_states": f_m.get("variable_states", {}), "flow_paths": f_m.get("flow_paths", [])}
             if s.startswith("["):
-                # Synthesized state
-                meta = meta or {"params": [], "returns": {}, "docstring": "", "variable_states": {}, "flow_paths": [], "archetype": "unknown"}
-                if "include" in s or "require" in s:
-                    meta["archetype"] = "dynamic-include"
+                m = m or {"params": [], "returns": {}, "docstring": "", "variable_states": {}, "flow_paths": [], "archetype": "unknown"}
+                if "include" in s or "require" in s: m["archetype"] = "dynamic-include"
+                else: m["archetype"] = "security-risk" if any(x in s for x in ["eval", "exec", "system"]) else ("db-interaction" if "mysqli" in s or m.get("archetype") == "data-repository" or "dvwaDatabaseConnect" in s.lower() else "data-sink")
+            bm[s] = m or {"params": [], "returns": {}, "docstring": "", "variable_states": {}, "flow_paths": [], "archetype": "unknown"}
+        return {"name": f"{ep_p}-flow", "entrypoint": ep_f, "states": list(states), "transitions": trans, "state_meta": bm, "is_macro_map": bm.get(ep_f, {}).get("archetype") == "system-hub"}
+
+    def export_behavior(self, bd: dict):
+        name = bd.get("name")
+        if not name: return
+        fp = self._safe_path("behaviors", f"{self._get_safe_filename(name)}.md")
+        sts, trs = bd.get("states", []), bd.get("transitions", [])
+        with open(fp, "w", encoding="utf-8") as f:
+            f.write("---\n"); yaml.safe_dump({"type": "behavior", "name": name, "entrypoint": bd.get("entrypoint"), "state_count": len(sts), "transition_count": len(trs)}, f, default_flow_style=False); f.write("---\n\n# Behavior: " + name + "\n\n## " + ("Macro System Map" if bd.get("is_macro_map") else "State Machine") + "\n\n")
+            if bd.get("is_macro_map"): f.write("```mermaid\ngraph TD\n  " + self._get_safe_filename(bd["entrypoint"]) + '["' + bd["entrypoint"] + '"]:::hub\n  classDef hub fill:#f96,stroke:#333,stroke-width:4px;\n')
+            else: f.write("```mermaid\nstateDiagram-v2\n")
+            als = {s: self._get_safe_filename(s) for s in sts}
+            for s, al in als.items():
+                if not bd.get("is_macro_map"):
+                    ss = self._get_semantic_state_label(s).replace('"', "'")
+                    if al == ss: f.write(f"    {ss}\n")
+                    else: f.write(f'    state "{ss}" as {al}\n')
+            for t in trs:
+                frm, to, cnd = als.get(t["from"], t["from"]), als.get(t["to"], t["to"]), t.get("condition")
+                if bd.get("is_macro_map"): f.write(f'  {frm} -- "{str(cnd).replace('"',"'")}" --> {to}\n' if cnd else f"  {frm} --> {to}\n")
                 else:
-                    if any(x in s for x in ["eval", "exec", "system"]):
-                        meta["archetype"] = "security-risk"
-                    elif "mysqli" in s or meta.get("archetype") == "data-repository":
-                        meta["archetype"] = "db-interaction"
-                    else:
-                        meta["archetype"] = "data-sink"
-            built_state_meta[s] = meta or {"params": [], "returns": {}, "docstring": "", "variable_states": {}, "flow_paths": [], "archetype": "unknown"}
+                    if cnd:
+                        sc = str(cnd).replace("\n", " ").replace('"', "'")
+                        if len(sc) > 100: sc = sc[:97] + "..."
+                        f.write(f"    {frm} --> {to}: {sc}\n")
+                    else: f.write(f"    {frm} --> {to}\n")
+            f.write("```\n\n## State Context\n\n| State | PE | Archetype | Summary |\n| :--- | ---: | :--- | :--- |\n")
+            m = bd.get("state_meta", {})
+            for s in sts:
+                sm = m.get(s, {})
+                f.write(f"| `[[{s}]]` | {sm.get('potential_energy','—')} | {sm.get('archetype','—')} | {(sm.get('docstring','') or '').split('\\n')[0][:100]} |\n")
+            f.write("\n" + self._generate_dataflow_narrative(bd))
 
-        is_hub = built_state_meta.get(entrypoint_func, {}).get("archetype") == "system-hub"
+    def _generate_dataflow_narrative(self, bd: dict) -> str:
+        narrative, meta = "## Dataflow Narrative\n\n", bd.get("state_meta", {})
+        srcs, snks = [], []
+        for name, m in meta.items():
+            for fl in m.get("flow_paths", []):
+                v, src = fl.get("variable", ""), fl.get("source", "")
+                if any(x in v or x in src for x in ["$_GET", "$_POST", "$_COOKIE", "$_SESSION", "$_REQUEST"]): srcs.append({"name": name, "variable": v, "state": fl.get("state"), "source": src})
+                snk = fl.get("sink")
+                if snk or m.get("archetype") in ["security-risk", "db-interaction", "dynamic-include"]: snks.append({"name": name, "variable": v, "sink": snk or name, "constraints": fl.get("constraints", [])})
+        if not srcs: return narrative + "No external data sources detected.\n\n"
+        narrative += "### Detected Sources\n"; seen = set()
+        for src in srcs:
+            ss = f"- **{src['variable']}** (from `{src['source']}`) in `[[{src['name']}]]` (State: `{src['state']}`)"
+            if ss not in seen: narrative += ss + "\n"; seen.add(ss)
+        narrative += "\n### Flow to Sinks\n"; ufl = set()
+        for src in srcs:
+            for snk in snks:
+                if src['variable'] == snk['variable'] or src['name'] == snk['name']:
+                    cns = f" (Constraints: `{', '.join(snk['constraints'])}`)" if snk['constraints'] else ""
+                    fs = f"- Data from source **{src['variable']}** reaches sink **{snk['sink']}** in `[[{snk['name']}]]`{cns}."
+                    if fs not in ufl: narrative += fs + "\n"; ufl.add(fs)
+        deep = []
+        if srcs and snks and self.indexer:
+            try:
+                for src in srcs:
+                    res = self.indexer.trace_path(function_name=src['name'], direction="outbound", depth=3)
+                    for c in res.get("callees", []):
+                        if any(s['name'] == c['name'] or s['name'] in c.get('qualified_name','') for s in snks): deep.append([src['name'], c['name']])
+            except Exception: pass
+        if deep:
+            narrative += "\n### Full Dataflow Paths (Trace)\n"
+            for p in deep[:5]: narrative += f"- `[[{p[0]}]]` -> ... -> `[[{p[1]}]]`\n"
+        return narrative + "\n"
 
-        return {
-            "name": f"{entrypoint_path}-flow",
-            "entrypoint": entrypoint_func,
-            "states": list(states),
-            "transitions": transitions,
-            "state_meta": built_state_meta,
-            "is_macro_map": is_hub
-        }
-
-    def export_behavior(self, behavior_data: dict):
-        name = behavior_data.get("name")
-        if not name:
-            return
-        safe_name = self._get_safe_filename(name)
-        filepath = self._safe_path("behaviors", f"{safe_name}.md")
-        states = behavior_data.get("states", [])
-        transitions = behavior_data.get("transitions", [])
-        
-        frontmatter = {
-            "type": "behavior",
-            "name": name,
-            "entrypoint": behavior_data.get("entrypoint"),
-            "state_count": len(states),
-            "transition_count": len(transitions)
-        }
-        
+    def export_branch_diff(self, d: dict):
+        filepath = self._safe_path("changes", "branch_diff.md")
         with open(filepath, "w", encoding="utf-8") as f:
-            f.write("---\n")
-            yaml.safe_dump(frontmatter, f, default_flow_style=False)
-            f.write("---\n\n")
-            f.write(f"# Behavior: {name}\n\n")
-            
-            is_macro = behavior_data.get("is_macro_map", False)
-            f.write(f"## {'Macro System Map' if is_macro else 'State Machine'}\n\n")
-            
-            if is_macro:
-                f.write("```mermaid\ngraph TD\n")
-                ep = behavior_data.get("entrypoint")
-                ep_alias = self._get_safe_filename(ep)
-                f.write(f'  {ep_alias}["{ep}"]:::hub\n')
-                f.write("  classDef hub fill:#f96,stroke:#333,stroke-width:4px;\n")
-            else:
-                f.write("```mermaid\nstateDiagram-v2\n")
-            
-            state_aliases = {}
-            for s in states:
-                alias = self._get_safe_filename(s)
-                if not is_macro:
-                    # Replace double quotes with single quotes to avoid breaking Mermaid string syntax
-                    safe_s = self._get_semantic_state_label(s).replace('"', "'")
-                    if alias == safe_s:
-                        f.write(f"    {safe_s}\n")
-                    else:
-                        f.write(f'    state "{safe_s}" as {alias}\n')
-                state_aliases[s] = alias
-                
-            for t in transitions:
-                frm = state_aliases.get(t["from"], t["from"])
-                to = state_aliases.get(t["to"], t["to"])
-                cond = t.get("condition")
-                if is_macro:
-                    if cond:
-                        safe_cond = str(cond).replace("\n", " ").replace('"', "'")
-                        f.write(f'  {frm} -- "{safe_cond}" --> {to}\n')
-                    else:
-                        f.write(f"  {frm} --> {to}\n")
-                else:
-                    if cond:
-                        safe_cond = str(cond).replace("\n", " ").replace('"', "'")
-                        f.write(f"    {frm} --> {to}: {safe_cond}\n")
-                    else:
-                        f.write(f"    {frm} --> {to}\n")
-            f.write("```\n\n")
-            
-            f.write("## State Context\n\n")
-            f.write("| State | PE | Archetype | Params | Returns | Summary |\n")
-            f.write("| :--- | ---: | :--- | :--- | :--- | :--- |\n")
-            meta = behavior_data.get("state_meta", {})
-            for s in states:
-                s_meta = meta.get(s, {})
-                pe = s_meta.get("potential_energy", "—")
-                arch = s_meta.get("archetype", "—")
-                v_states = s_meta.get("variable_states", {})
-                invariants = []
-                for v, vdata in v_states.items():
-                    if isinstance(vdata, dict) and vdata.get("constraints"):
-                        invariants.extend(vdata["constraints"])
-                invariants_str = "<br>".join([self._sanitize_for_table(x) for x in list(set(invariants))[:3]]) if invariants else "—"
-                p = s_meta.get("params", [])
-                params_str = ", ".join([str(x) for x in p]) if p else "—"
-                r = s_meta.get("returns", "—")
-                doc = s_meta.get("docstring", "")
-                summary = doc.split("\n")[0][:100] if doc else "—"
-                f.write(f"| `[[{s}]]` | {pe} | {arch} | {params_str} | `{r}` | {summary} <br> **Invariants:** {invariants_str} |\n")
-            f.write("\n")
+            f.write(f"# 🌿 Branch Diff & Semantic Distance Report\n\n**Comparing current workspace against:** `{d.get('branch_y', 'main')}`\n\n## 📝 Added Files\n" + "\n".join([f"- {fl}" for fl in d.get("added_files", [])]) + "\n\n## 📝 Semantic Changes\n| File | Distance | Status |\n|:---|:---|:---|\n")
+            for sc in d.get("semantic_changes", []): f.write(f"| {sc['file']} | {sc['distance']:.2f} | {sc['status']} |\n")
 
-            # Aggregated Dynamic Variable Tracking
-            all_var_states = {}
-            all_flow_paths = []
-            
-            for s in states:
-                s_meta = meta.get(s, {})
-                v_states = s_meta.get("variable_states", {})
-                for var_name, var_info in v_states.items():
-                    if not isinstance(var_info, dict):
-                        continue
-                    if var_name not in all_var_states:
-                        all_var_states[var_name] = {
-                            "state": var_info.get("state", "SAFE"),
-                            "type": var_info.get("type") or "—",
-                            "constraints": list(var_info.get("constraints") or [])
-                        }
-                    else:
-                        existing = all_var_states[var_name]
-                        s1 = existing["state"]
-                        s2 = var_info.get("state", "SAFE")
-                        merged_s = "SAFE"
-                        if "TAINTED" in (s1, s2):
-                            merged_s = "TAINTED"
-                        elif "UNSAFE" in (s1, s2):
-                            merged_s = "UNSAFE"
-                        elif "CONSTANT" in (s1, s2):
-                            merged_s = "CONSTANT"
-                        
-                        existing_c = existing.get("constraints") or []
-                        new_c = var_info.get("constraints") or []
-                        merged_c = list(set(existing_c + new_c))
-                        
-                        all_var_states[var_name] = {
-                            "state": merged_s,
-                            "type": var_info.get("type") or existing.get("type") or "—",
-                            "constraints": merged_c
-                        }
-                
-                for path in s_meta.get("flow_paths", []):
-                    if isinstance(path, dict) and path not in all_flow_paths:
-                        all_flow_paths.append(path)
-            
-            if all_var_states:
-                f.write("## Dynamic Variable Tracking\n\n")
-                f.write("| Variable | State | Type | Constraints |\n")
-                f.write("| :--- | :--- | :--- | :--- |\n")
-                for var_name in sorted(all_var_states.keys()):
-                    info = all_var_states[var_name]
-                    state = info["state"]
-                    vtype = info["type"]
-                    constraints = info["constraints"]
-                    constraints_str = ", ".join([self._sanitize_for_table(x) for x in constraints]) if constraints else "—"
-                    f.write(f"| `{var_name}` | `{state}` | {vtype} | {constraints_str} |\n")
-                f.write("\n")
-                
-            if all_flow_paths:
-                f.write("## Behavior Dataflow Tracking\n\n")
-                f.write("```mermaid\ngraph LR\n")
-                node_ids = {}
-                def get_node_id(name_str):
-                    if name_str not in node_ids:
-                        node_ids[name_str] = f"node_{len(node_ids)}"
-                    return node_ids[name_str]
-                
-                connections = set()
-                for path in all_flow_paths:
-                    src = path.get("source", "unknown")
-                    sink = path.get("sink", "unknown")
-                    var = path.get("variable", "")
-                    
-                    src_id = get_node_id(src)
-                    sink_id = get_node_id(sink)
-                    
-                    safe_src = str(src).replace('"', "'")
-                    safe_sink = str(sink).replace('"', "'")
-                    safe_var = str(var).replace('"', "'")
-                    
-                    if var:
-                        conn_str = f'    {src_id}["{safe_src}"] -- "{safe_var}" --> {sink_id}["{safe_sink}"]\n'
-                    else:
-                        conn_str = f'    {src_id}["{safe_src}"] --> {sink_id}["{safe_sink}"]\n'
-                    
-                    if conn_str not in connections:
-                        connections.add(conn_str)
-                        f.write(conn_str)
-                f.write("```\n\n")
-
-
-    def export_narrative(self, archetype: str, symbols: List[dict]):
-        """Exports a high-level narrative summary of a subsystem."""
-        safe_arch = self._get_safe_filename(archetype)
-        filepath = self._safe_path("narratives", f"archetype_{safe_arch}.md")
-        total_mass = sum(s.get("mass", 1.0) for s in symbols)
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write(f"# Subsystem Narrative: {archetype}\n\n")
-            f.write(f"This subsystem contains {len(symbols)} symbols with a collective mass of {total_mass:.2f}.\n\n")
-            f.write(f"## Key Symbols\n")
-            key_symbols = sorted(symbols, key=lambda x: x.get("mass", 0), reverse=True)[:10]
-            for s in key_symbols:
-                f.write(f"- `[[{s['name']}]]` (Mass: {s.get('mass', 0):.2f}, PE: {s.get('potential_energy', 0):.2f})\n")
-            f.write(f"\n## Security Posture\n")
-            tainted_count = sum(1 for s in symbols if any(isinstance(data, dict) and data.get("state") == "TAINTED" for data in s.get("variable_states", {}).values()))
-            f.write(f"- **Tainted Symbols**: {tainted_count}\n")
-            f.write(f"\n## Primary Dataflows\n")
-            f.write("| Source | Target | State |\n")
-            f.write("|:---|:---|:---|\n")
-            count = 0
-            for s in symbols:
-                for path in s.get("flow_paths", []):
-                    f.write(f"| {path.get('source')} | {path.get('sink')} | {path.get('state')} |\n")
-                    count += 1
-                    if count > 20: break
-                if count > 20: break
-
-    def export_warnings(self, warnings: List[dict]):
+    def export_warnings(self, ws: List[dict]):
         filepath = self._safe_path("rules", "warnings.md")
         with open(filepath, "w", encoding="utf-8") as f:
-            f.write("# Docstring & Quality Invariants Warnings\n\n")
-            f.write("| Symbol | File | Warnings |\n")
-            f.write("|:---|:---|:---|\n")
-            for w in warnings:
-                f.write(f"| `[[{w['name']}]]` | {w['file']} | {', '.join(w['warnings'])} |\n")
+            f.write("# Docstring & Quality Invariants Warnings\n\n| Symbol | File | Warnings |\n|:---|:---|:---|\n")
+            for w in ws: f.write(f"| `[[{w['name']}]]` | {w['file']} | {', '.join(w['warnings'])} |\n")
 
-    def export_vulnerabilities(self, vulns: List[dict]):
+    def export_vulnerabilities(self, vs: List[dict]):
         filepath = self._safe_path("rules", "vulnerabilities.md")
         with open(filepath, "w", encoding="utf-8") as f:
-            f.write("# 🛡️ Codebase Security Vulnerabilities\n\n")
-            f.write("| Severity | Symbol | File | Finding |\n")
-            f.write("|:---|:---|:---|:---|\n")
-            for v in vulns:
-                severity = v.get("severity", "LOW")
-                name = v.get("name") or v.get("function") or "unknown"
-                safe_link = v.get("safe_link") or self._get_safe_filename(name)
-                file_path = v.get("file") or "unknown"
-                finding = v.get("message") or v.get("description") or "unknown"
-                f.write(f"| {severity} | `[[{safe_link}]]` | {file_path} | {finding} |\n")
+            f.write("# 🛡️ Codebase Security Vulnerabilities\n\n| Severity | Symbol | File | Finding |\n|:---|:---|:---|:---|\n")
+            for v in vs: f.write(f"| {v.get('severity','LOW')} | `[[{v.get('safe_link') or self._get_safe_filename(v.get('name') or v.get('function') or 'unknown')}]]` | {v.get('file', 'unknown')} | {v.get('message') or v.get('description', 'unknown')} |\n")
 
-    def export_hotspots(self, hotspots: dict):
+    def export_hotspots(self, hs: dict):
         filepath = self._safe_path("rules", "hotspots.md")
         with open(filepath, "w", encoding="utf-8") as f:
-            f.write("# 📊 Codebase Cognitive & Complexity Hotspots\n\n")
-            f.write("## 🏋️ Complexity Hotspots (Highest Mass)\n")
-            f.write("| Symbol | File | Mass | Archetype |\n")
-            f.write("|:---|:---|:---|:---|\n")
-            for h in hotspots.get("complexity", []):
-                f.write(f"| `[[{h['name']}]]` | {h.get('file', 'unknown')} | {h['mass']:.1f} | {h.get('archetype', '—')} |\n")
-            
-            f.write("\n## ⚡ Attention Hotspots (Highest Drift / Attention Debt)\n")
-            f.write("| Symbol | File | Potential Energy | Archetype |\n")
-            f.write("|:---|:---|:---|:---|\n")
-            for h in hotspots.get("attention", []):
-                f.write(f"| `[[{h['name']}]]` | {h.get('file', 'unknown')} | {h['potential_energy']:.2f} | {h.get('archetype', '—')} |\n")
+            f.write("# 📊 Codebase Cognitive & Complexity Hotspots\n\n## 🏋️ Complexity Hotspots (Highest Mass)\n| Symbol | File | Mass | Archetype |\n|:---|:---|:---|:---|\n")
+            for h in hs.get("complexity", []): f.write(f"| `[[{h['name']}]]` | {h.get('file', 'unknown')} | {h['mass']:.1f} | {h.get('archetype', '—')} |\n")
+            f.write("\n## ⚡ Attention Hotspots\n| Symbol | File | PE | Archetype |\n|:---|:---|:---|:---|\n")
+            for h in hs.get("attention", []): f.write(f"| `[[{h['name']}]]` | {h.get('file', 'unknown')} | {h['potential_energy']:.2f} | {h.get('archetype', '—')} |\n")
 
-    def export_archetypes(self, groups: dict):
+    def export_archetypes(self, gs: dict):
         filepath = self._safe_path("rules", "archetypes.md")
         with open(filepath, "w", encoding="utf-8") as f:
             f.write("# 🧩 Codebase Semantic Archetypes\n\n")
-            for arch, symbols in groups.items():
-                title_arch = "-".join([w.capitalize() for w in arch.split("-")])
-                safe_arch = self._get_safe_filename(arch)
-                f.write(f"## {title_arch} (Narrative: [[archetype_{safe_arch}]])\n")
-                for s in symbols[:15]:
-                    confidence_str = f" (Confidence: {s['confidence']:.2%})" if 'confidence' in s else ""
-                    f.write(f"- `[[{s['name']}]]`{confidence_str}\n")
+            for arch, syms in gs.items():
+                f.write(f"## {"-".join([w.capitalize() for w in arch.split("-")])} (Narrative: [[archetype_{self._get_safe_filename(arch)}]])\n")
+                for s in syms[:15]: f.write(f"- `[[{s['name']}]]`{(' (Confidence: ' + str(s['confidence'] * 100) + '%)' if 'confidence' in s else '')}\n")
                 f.write("\n")
-
-    def export_branch_diff(self, diff: dict):
-        filepath = self._safe_path("changes", "branch_diff.md")
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write("# 🌿 Branch Diff & Semantic Distance Report\n\n")
-            target = diff.get("target_branch") or "main"
-            f.write(f"**Comparing current workspace against:** `{target}`\n\n")
-            distance = diff.get("semantic_distance", 0.0)
-            f.write(f"**Semantic Distance:** `{distance}`\n\n")
-            
-            f.write("## 📝 Modified Files & Relevance Scores\n")
-            f.write("| File | Status | Churn | Relevance |\n")
-            f.write("|:---|:---|:---|:---|\n")
-            for fl in diff.get("files", []):
-                f.write(f"| {fl['file']} | {fl.get('status')} | {fl.get('churn')} | {fl.get('relevance_score')} |\n")
