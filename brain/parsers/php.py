@@ -58,7 +58,20 @@ def extract_dataflow(code_snippet: str) -> List[Dict[str, Any]]:
     for i, line in enumerate(lines):
         pos = code_snippet.find(line)
         
-        # 0. Constants (Record as sink for behavior)
+        # 0. Conditions and Branches
+        m_cond = re.search(r"\b(if|elseif|switch|while|for|foreach)\b\s*\((.*)\)", line)
+        if m_cond:
+            dataflow.append({"type": "condition", "verb": m_cond.group(1), "content": m_cond.group(2), "pos": pos + m_cond.start()})
+        
+        m_else = re.search(r"\belse\b", line)
+        if m_else and not m_cond:
+            dataflow.append({"type": "condition", "verb": "else", "content": "else branch", "pos": pos + m_else.start()})
+            
+        m_case = re.search(r"\bcase\b\s*([^:]+):", line)
+        if m_case:
+            dataflow.append({"type": "condition", "verb": "case", "content": m_case.group(1).strip(), "pos": pos + m_case.start()})
+
+        # 1. Constants (Record as sink for behavior)
         m = re.search(r"\bdefine\s*\(\s*['\"](\w+)['\"]\s*,\s*['\"]([^'\"]+)['\"]\s*\)", line)
         if m:
             dataflow.append({"type": "sink", "sink": "define", "args": f"{m.group(1)}, {m.group(2)}", "pos": pos + m.start()})

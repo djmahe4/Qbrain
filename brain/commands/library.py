@@ -93,7 +93,10 @@ def sync_library(config, indexer, console):
                     short_to_qualified[fp] = fn
                     file_symbols_data.setdefault(fp, []).append(f)
 
-            file_suffixes = {fp.split("/")[-1]: fp for fp in file_symbols_data.keys()}
+            file_suffixes = {}
+            for fp in file_symbols_data.keys():
+                suffix = fp.split("/")[-1]
+                file_suffixes.setdefault(suffix, []).append(fp)
             _SKIP = {"yaml", "markdown", "toml", "json", "generic"}
             
             for f in funcs:
@@ -133,27 +136,86 @@ def sync_library(config, indexer, console):
                     tnode, verb = None, atom.get("verb") or atom.get("sink")
                     if atype == "synthesized_call":
                         hint = atom.get("resolved_hint")
-                        if hint:
-                            ch = os.path.normpath(hint.replace("{","").replace("}","").strip("'\" /").replace("\\","/"))
+                        potential_hints = [hint] if hint else []
+                        
+                        # If hint contains variables, try to resolve all possible values from dataflow
+                        if hint and "{" in hint:
+                            vars_in_hint = re.findall(r"\{(\$?\w+)\}", hint)
+                            for vh in vars_in_hint:
+                                # Look for all assignments to this variable in the current function's dataflow
+                                possible_values = []
+                                for other_atom in f["dataflow"]:
+                                    if other_atom.get("type") == "assignment" and other_atom.get("variable") == vh:
+                                        val = other_atom.get("value", "").strip("'\" ")
+                                        if val and not val.startswith("$"): # Only take literal assignments for now
+                                            possible_values.append(val)
+                                
+                                if possible_values:
+                                    new_hints = []
+                                    for ph in potential_hints:
+                                        for val in set(possible_values):
+                                            new_hints.append(ph.replace(f"{{{vh}}}", val))
+                                    potential_hints = new_hints
+                        
+                        potential_targets = []
+                        for ph in potential_hints:
+                            tnode = None
+                            ch = os.path.normpath(ph.replace("{","").replace("}","").strip("'\" /").replace("\\","/"))
                             if ch in short_to_qualified: tnode = short_to_qualified[ch]
                             else:
                                 for sq in short_to_qualified.keys():
                                     sq_norm = os.path.normpath(sq)
-                                    if sq_norm.endswith(ch) or ch.endswith(sq_norm) or ch in sq_norm: tnode = short_to_qualified[sq]; break
+                                    if sq_norm.endswith(ch) or ch.endswith(sq_norm) or ch in sq_norm:
+                                        tnode = short_to_qualified[sq]; break
+                                
                                 if not tnode:
                                     hb = ch.split("/")[-1]
-                                    if hb in file_suffixes: tnode = file_suffixes[hb]
-                        ft = tnode or f"[{verb}] {atom.get('raw_path')}"
+                                    if hb in file_suffixes:
+                                        matches = file_suffixes[hb]
+                                        if len(matches) == 1: tnode = matches[0]
+                                        else:
+                                            parent_dir = os.path.dirname(ch)
+                                            if parent_dir and parent_dir != ".":
+                                                for m in matches:
+                                                    if parent_dir in m: tnode = m; break
+                                            if not tnode: tnode = matches[0]
+                            if tnode: potential_targets.append(tnode)
+                            else: potential_targets.append(f"[{verb}] {ph}")
+                        
+                        # Avoid using the fallback logic below for synthesized calls
+                        ft = None 
                     else:
                         sn = atom.get("sink")
                         if sn in short_to_qualified: tnode = short_to_qualified[sn]
+                        else: tnode = None
                         ft = tnode or f"[{sn}] {atom.get('args', '')}"
+                        potential_targets = [ft]
+                    # Note: We currently only support one target node per atom in this loop.
+                    # To support multiple scenarios (e.g. switch branches), we'd need to emit multiple calls_map entries.
                     
                     cond = ", ".join(atom.get("constraints", [])) or None
-                    if (ft, cond) not in calls_map.get(name, {}).get("callees_detailed", []):
-                        calls_map.setdefault(name, {}).setdefault("callees_detailed", []).append((ft, cond))
-                        calls_map.setdefault(name, {}).setdefault("callees", []).append(ft)
-                    if name not in calls_map.get(ft, {}).get("callers", []): calls_map.setdefault(ft, {}).setdefault("callers", []).append(name)
+                    
+                    # If we have multiple potential targets for a synthesized call, we should ideally add all of them.
+                    potential_targets = [tnode] if tnode else []
+                    
+                    # Special logic: if it was a synthesized call and we have multiple matches for the suffix, add all.
+                    if atype == "synthesized_call" and not tnode:
+                        hb = ch.split("/")[-1]
+                        if hb in file_suffixes:
+                            potential_targets = file_suffixes[hb]
+                    
+                    if not potential_targets and atype == "sink":
+                        sn = atom.get("sink")
+                        if sn in short_to_qualified: potential_targets = [short_to_qualified[sn]]
+                        else: potential_targets = [f"[{sn}] {atom.get('args', '')}"]
+                    elif not potential_targets:
+                        potential_targets = [f"[{verb}] {atom.get('raw_path')}"]
+
+                    for ft in potential_targets:
+                        if (ft, cond) not in calls_map.get(name, {}).get("callees_detailed", []):
+                            calls_map.setdefault(name, {}).setdefault("callees_detailed", []).append((ft, cond))
+                            calls_map.setdefault(name, {}).setdefault("callees", []).append(ft)
+                        if name not in calls_map.get(ft, {}).get("callers", []): calls_map.setdefault(ft, {}).setdefault("callers", []).append(name)
 
             # 4. Neighbors & PE
             semantic_neighbors, _func_embeddings = {}, {}
@@ -228,7 +290,7 @@ def sync_library(config, indexer, console):
                 sd = {
                     "name": name, "language": f.get("language") or "generic", "file": f_path, "kind": skind, "signature": f.get("signature") or name, "docstring": f.get("docstring"), "params": pg.get("params", []), "returns": pg.get("returns", {}), "business_rules": pg.get("business_rules", []), 
                     "code_snippet": f.get("code_snippet") if skind != "Module" else f"[Full file context available in Files folder: {f_path}]",
-                    "mass": cognitive_info.get(name, {}).get("mass", 1.0), "potential_energy": cognitive_info.get(name, {}).get("potential_energy", 0.0), "archetype": cognitive_info.get(name, {}).get("archetype", "generic"), "semantic_neighbors": semantic_neighbors.get(name, []), "callers": calls_map.get(name, {}).get("callers", []), "callees": calls_map.get(name, {}).get("callees", []), "vulnerabilities": sv, "line": f.get("line"), "line_range": [int(f.get("line", 0) or 0), int(f.get("end_line", 0) or 0)], "variable_states": f.get("variable_states", {}), "flow_paths": f.get("flow_paths", []), "members": []
+                    "mass": cognitive_info.get(name, {}).get("mass", 1.0), "potential_energy": cognitive_info.get(name, {}).get("potential_energy", 0.0), "archetype": cognitive_info.get(name, {}).get("archetype", "generic"), "semantic_neighbors": semantic_neighbors.get(name, []), "callers": calls_map.get(name, {}).get("callers", []), "callees": calls_map.get(name, {}).get("callees", []), "vulnerabilities": sv, "line": int(f.get("line") or 0), "line_range": [int(f.get("line") or 0), int(f.get("end_line") or 0)], "variable_states": f.get("variable_states", {}), "flow_paths": f.get("flow_paths", []), "members": []
                 }
                 all_s_map[name] = sd
 
@@ -265,7 +327,7 @@ def sync_library(config, indexer, console):
                 
                 fvs = {}
                 for s in f_syms: fvs.update(all_s_map.get(s.get("name"), {}).get("variable_states", {}))
-                lsd = [{"name": s.get("name"), "kind": all_s_map.get(s.get("name"), {}).get("kind"), "signature": all_s_map.get(s.get("name"), {}).get("signature"), "docstring": s.get("docstring"), "business_rules": all_s_map.get(s.get("name"), {}).get("business_rules", []), "flow_paths": all_s_map.get(s.get("name"), {}).get("flow_paths", [])} for s in f_syms]
+                lsd = [{"name": s.get("name"), "kind": all_s_map.get(s.get("name"), {}).get("kind"), "line": int(all_s_map.get(s.get("name"), {}).get("line") or 0), "signature": all_s_map.get(s.get("name"), {}).get("signature"), "docstring": s.get("docstring"), "business_rules": all_s_map.get(s.get("name"), {}).get("business_rules", []), "flow_paths": all_s_map.get(s.get("name"), {}).get("flow_paths", [])} for s in f_syms]
                 engine.export_file({"file_path": fp, "language": lang, "lines_of_code": loc, "size": size, "symbols": [s.get("name") for s in f_syms], "symbols_data": lsd, "variable_states": fvs})
 
             for ep in mapped_ep:

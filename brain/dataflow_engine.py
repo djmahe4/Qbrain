@@ -84,10 +84,10 @@ class DataFlowEngine:
             active_constraints = list(set(constraint_stack))
             if last_cond: active_constraints.append(last_cond)
 
-            if a_type == "global_state":
+            if a_type in ("global_state", "source"):
                 var = atom["variable"]
-                var_states[var] = {"state": "GLOBAL_STATE", "type": "dynamic", "source": atom["source"], "constraints": list(active_constraints)}
-            
+                source_name = atom.get("source") or (var.split("[")[0] if "[" in var else "external")
+                var_states[var] = {"state": "TAINTED", "type": "dynamic", "source": source_name, "constraints": list(active_constraints)}
             elif a_type == "assignment":
                 var_raw, val_raw = atom["variable"], atom["value"]
                 base_var = var_raw
@@ -145,11 +145,10 @@ class DataFlowEngine:
                         c_name = parts[0].strip().strip("'\"")
                         c_val = parts[1].strip()
                         var_states[c_name] = {"state": "CONSTANT", "type": self._infer_type(c_val), "source": "internal", "constraints": list(active_constraints)}
-                
                 for var_name, data in var_states.items():
                     if re.search(fr"(?<![\w\$]){re.escape(var_name)}(?![\w\$])", args):
-                        if data["state"] != "CONSTANT" or data["source"] != "internal":
-                            paths.append({"source": data["source"], "sink": sink_name, "variable": var_name, "state": data["state"], "type": data["type"], "constraints": list(active_constraints)})
+                        # Always track flows to sinks to provide richer dataflow descriptions
+                        paths.append({"source": data.get("source", "internal"), "sink": sink_name, "variable": var_name, "state": data.get("state", "CONSTANT"), "type": data.get("type", "unknown"), "constraints": list(active_constraints)})
 
         return {
             "variable_states": var_states,
