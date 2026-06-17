@@ -174,7 +174,7 @@ def extract_dataflow(code_snippet: str) -> List[Dict[str, Any]]:
         })
 
     # 5. Conditions & Branches (Decision Points)
-    cond_pattern = re.compile(r"\b(if|elseif|else if|else|switch|case|for|while|foreach)\b(?:\s*\(?([^{:]+))?")
+    cond_pattern = re.compile(r"\b(if|elseif|else if|else|switch|case|default|for|while|foreach)\b(?:\s*\(?([^{:]+))?")
     for match in cond_pattern.finditer(code_snippet):
         verb = match.group(1)
         content = match.group(2).strip() if match.group(2) else ""

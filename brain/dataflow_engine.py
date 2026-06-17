@@ -70,27 +70,43 @@ class DataFlowEngine:
             raw_atoms = php.extract_dataflow(code)
         
         # 2. Process Atoms
-        constraint_stack = []
+        constraint_stack = [] # List of strings
         last_cond = None
+        active_switch_cond = None
         
         for atom in raw_atoms:
             a_type = atom.get("type")
             line = atom.get("line")
             
             if a_type == "condition":
-                is_loop = atom.get("verb") in ("for", "foreach")
+                verb = atom.get("verb")
+                is_loop = verb in ("for", "foreach", "while")
                 cond_content = atom.get("content", "")
                 if len(cond_content) > 200: cond_content = cond_content[:197] + "..."
-                if not is_loop: last_cond = cond_content
-                if not last_cond and atom.get("verb") == "else": last_cond = "else branch"
+                
+                if verb == "switch":
+                    active_switch_cond = cond_content
+                    last_cond = cond_content
+                elif verb == "case" and active_switch_cond:
+                    last_cond = f"{active_switch_cond} == {cond_content}"
+                elif verb == "default" and active_switch_cond:
+                    last_cond = f"{active_switch_cond} == 'default'"
+                elif not is_loop:
+                    last_cond = cond_content
+                
+                if not last_cond and verb == "else": last_cond = "else branch"
             
             elif a_type == "delimiter":
-                if atom.get("value") == "{":
+                val = atom.get("value")
+                if val == "{":
                     if last_cond:
                         constraint_stack.append(last_cond)
                         last_cond = None
-                elif atom.get("value") == "}":
-                    if constraint_stack: constraint_stack.pop()
+                elif val == "}":
+                    if constraint_stack: 
+                        popped = constraint_stack.pop()
+                        if popped == active_switch_cond:
+                            active_switch_cond = None
             
             curr_active_constraints = list(set(constraint_stack))
             if last_cond: curr_active_constraints.append(last_cond)
@@ -101,7 +117,8 @@ class DataFlowEngine:
                     "state": "GLOBAL_STATE",
                     "type": "dynamic",
                     "source": atom["source"],
-                    "constraints": curr_active_constraints
+                    "constraints": curr_active_constraints,
+                    "choices": [{"value": atom["source"], "constraints": curr_active_constraints, "state": "GLOBAL_STATE"}]
                 }
             
             elif a_type == "constant":
@@ -111,7 +128,8 @@ class DataFlowEngine:
                     "type": self._infer_type(str(atom["value"])),
                     "source": "internal",
                     "value": atom["value"],
-                    "constraints": curr_active_constraints
+                    "constraints": curr_active_constraints,
+                    "choices": [{"value": str(atom["value"]), "constraints": curr_active_constraints, "state": "CONSTANT"}]
                 }
             
             elif a_type == "assignment":
@@ -131,7 +149,8 @@ class DataFlowEngine:
                         "type": "unknown",
                         "source": "internal",
                         "properties": {},
-                        "constraints": curr_active_constraints
+                        "constraints": curr_active_constraints,
+                        "choices": []
                     }
 
                 inferred_type = self._infer_type(val_raw)
@@ -167,43 +186,94 @@ class DataFlowEngine:
                 var_states[base_var]["state"] = state
                 var_states[base_var]["source"] = source
 
+                # Track choices for scenario fan-out
+                new_choice = {
+                    "value": val_raw,
+                    "constraints": curr_active_constraints,
+                    "state": state,
+                    "source": source
+                }
+                if "choices" not in var_states[base_var]:
+                    var_states[base_var]["choices"] = []
+                if new_choice not in var_states[base_var]["choices"]:
+                    var_states[base_var]["choices"].append(new_choice)
+                
+                # Keep a single value_hint for backward compatibility
+                if base_var == var_raw:
+                    var_states[base_var]["value_hint"] = val_raw[:100]
+
             elif a_type == "synthesized_call":
                 raw_path = atom["raw_path"]
-                resolved_hint = raw_path
                 
-                # 1. Resolve against local variables
+                # Initial resolution set for fan-out
+                scenarios = [{"resolved": raw_path, "constraints": []}]
+                
+                # 1. Resolve variables with fan-out support
                 for var, data in var_states.items():
-                    if var.startswith("$"):
-                        escaped_var = re.escape(var)
-                        pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
-                        if re.search(pattern, resolved_hint):
+                    if not var.startswith("$"): continue
+                    escaped_var = re.escape(var)
+                    pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
+                    
+                    new_scenarios = []
+                    for s in scenarios:
+                        if not re.search(pattern, s["resolved"]):
+                            new_scenarios.append(s)
+                            continue
+                            
+                        choices = data.get("choices", [])
+                        if not choices:
                             val_hint = data.get("value_hint", data.get("value", "..."))
-                            resolved_hint = re.sub(pattern, str(val_hint), resolved_hint)
-                
+                            new_resolved = re.sub(pattern, str(val_hint), s["resolved"])
+                            new_scenarios.append({"resolved": new_resolved, "constraints": s["constraints"]})
+                        else:
+                            for choice in choices:
+                                val = choice["value"]
+                                # Strip quotes for literal path segments
+                                if (val.startswith("'") and val.endswith("'")) or (val.startswith('"') and val.endswith('"')):
+                                    val = val[1:-1]
+                                
+                                new_resolved = re.sub(pattern, str(val), s["resolved"])
+                                new_constraints = list(set(s["constraints"] + choice.get("constraints", [])))
+                                new_scenarios.append({"resolved": new_resolved, "constraints": new_constraints})
+                    scenarios = new_scenarios
+
                 # 2. Resolve against registry constants
                 if registry and lang == "php":
                     for const_name in registry.constants:
                         escaped_const = re.escape(const_name)
                         pattern = fr"(?<![\w\$]){escaped_const}(?![\w\$])"
+                        val = registry.get_constant(const_name)
+                        for s in scenarios:
+                            if re.search(pattern, s["resolved"]):
+                                s["resolved"] = re.sub(pattern, str(val), s["resolved"])
+                
+                # 3. Final cleanup and registration
+                for s in scenarios:
+                    resolved_hint = s["resolved"]
+                    
+                    # Resolve remaining local constants (not starting with $)
+                    for var, data in var_states.items():
+                        if var.startswith("$"): continue
+                        escaped_var = re.escape(var)
+                        pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
                         if re.search(pattern, resolved_hint):
-                            val = registry.get_constant(const_name)
+                            val = data.get("value", "...")
                             resolved_hint = re.sub(pattern, str(val), resolved_hint)
-                
-                # Cleanup path separators and markers
-                # Remove dots used for concatenation and handle quotes
-                resolved_hint = re.sub(r"['\"]\s*\.\s*", "", resolved_hint) # 'a' . b -> ab
-                resolved_hint = re.sub(r"\s*\.\s*['\"]", "", resolved_hint) # b . 'a' -> ab
-                resolved_hint = re.sub(r"(?<!\w)\.|\.(?!\w)", "/", resolved_hint)
-                resolved_hint = resolved_hint.replace("'", "").replace('"', "").replace("//", "/")
-                resolved_hint = resolved_hint.strip()
-                
-                synthesized_calls.append({
-                    "verb": atom["verb"],
-                    "raw": raw_path,
-                    "resolved": resolved_hint,
-                    "line": line
-                })
 
+                    resolved_hint = re.sub(r"['\"]\s*\.\s*", "", resolved_hint)
+                    resolved_hint = re.sub(r"\s*\.\s*['\"]", "", resolved_hint)
+                    resolved_hint = re.sub(r"(?<!\w)\.|\.(?!\w)", "/", resolved_hint)
+                    resolved_hint = resolved_hint.replace("'", "").replace('"', "").replace("//", "/")
+                    resolved_hint = resolved_hint.strip()
+                    
+                    synthesized_calls.append({
+                        "verb": atom["verb"],
+                        "raw": raw_path,
+                        "resolved": resolved_hint,
+                        "resolved_hint": resolved_hint, # For Librarian compatibility
+                        "line": line,
+                        "scenario_constraints": s["constraints"]
+                    })
             elif a_type == "sink":
                 sink_name = atom["sink"]
                 args = atom["args"]

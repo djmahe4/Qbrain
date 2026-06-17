@@ -153,6 +153,7 @@ def sync_library(config, indexer, console):
                 short_to_qualified[fname] = fname
                 if f.get("file"): short_to_qualified[f.get("file")] = fname
 
+            scenario_implementations = {}
             for f in funcs:
                 name, f_path, labels = f.get("name"), f.get("file"), f.get("labels", [])
                 lang = f.get("language") or detect_language(f_path or "")
@@ -185,7 +186,32 @@ def sync_library(config, indexer, console):
                                 target_node = potential.get("name")
                                 break
                         final_target = target_node or f"[{verb}] {hint}"
-                        condition = ", ".join(sync_call.get("constraints", [])) if sync_call.get("constraints") else None
+                        scenario_constraints = sync_call.get("scenario_constraints", [])
+                        condition = ", ".join(scenario_constraints) if scenario_constraints else None
+                        
+                        # If this call has scenario constraints, mark the target as a scenario implementation
+                        if scenario_constraints:
+                            # Try to find the file path of the target
+                            target_file = None
+                            if target_node:
+                                target_file = next((p.get("file") for p in funcs if p.get("name") == target_node), None)
+                            elif "/" in clean_hint or "." in clean_hint:
+                                if f_path:
+                                    target_file = os.path.normpath(os.path.join(os.path.dirname(f_path), clean_hint))
+                                else:
+                                    target_file = clean_hint
+                            
+                            if target_file:
+                                # Normalize to relative path without leading slash for matching
+                                target_file = target_file.lstrip("/")
+                                if target_file not in scenario_implementations:
+                                    scenario_implementations[target_file] = []
+                                # Avoid duplicates for the same scenario
+                                if not any(s["constraints"] == scenario_constraints for s in scenario_implementations[target_file]):
+                                    scenario_implementations[target_file].append({
+                                        "dispatcher": f_path or name,
+                                        "constraints": scenario_constraints
+                                    })
 
                         if (final_target, condition) not in calls_map.get(name, {}).get("callees_detailed", []):
                             calls_map.setdefault(name, {}).setdefault("callees_detailed", []).append((final_target, condition))
@@ -195,6 +221,9 @@ def sync_library(config, indexer, console):
 
             # 4. Semantic neighbors & potential energy
             semantic_neighbors = {}
+            console.print(f"DEBUG: TOTAL SCENARIOS: {len(scenario_implementations)}")
+            for k, v in scenario_implementations.items():
+                console.print(f"DEBUG:   - {k} -> {v}")
             _func_embeddings: dict = {}
             try:
                 embedder = Embedder()
@@ -351,34 +380,49 @@ def sync_library(config, indexer, console):
                 cog = cognitive_info.get(name, {})
                 sym_meta[name] = {"params": f.get("params", []), "returns": f.get("returns", {}), "docstring": f.get("docstring") or "", "potential_energy": cog.get("potential_energy", 0.0), "archetype": cog.get("archetype", "generic"), "variable_states": f.get("variable_states", {}), "flow_paths": f.get("flow_paths", [])}
 
-            # Consolidate entrypoints by directory to reduce redundancy (e.g. low/med/high variants)
-            grouped_eps = {}
+            # Process all entrypoints, detecting multiversal scenarios
+            processed_behaviors = set()
             for ep in entrypoints:
-                path = ep.get("file", "")
-                group_key = os.path.dirname(path) if path else "root"
-                if group_key not in grouped_eps:
-                    grouped_eps[group_key] = ep
-                else:
-                    # Generic preference: prefer 'index' or the shortest filename as the representative
-                    curr_name = os.path.basename(grouped_eps[group_key].get("file", "")).lower()
-                    new_name = os.path.basename(path).lower()
-                    if "index" in new_name and "index" not in curr_name:
-                        grouped_eps[group_key] = ep
-                    elif len(new_name) < len(curr_name) and "index" not in curr_name:
-                        grouped_eps[group_key] = ep
-
-            for group_path, ep in grouped_eps.items():
                 ep_path = ep.get("file", "")
                 ep_func = short_to_qualified.get(ep_path) or next((f.get("name") for f in funcs if f.get("file") == ep_path), ep.get("name", "main"))
                 
-                model = engine.generate_behavior_model(ep_func, ep_path, calls_map, funcs, sym_meta, config.data.get("behavior_max_depth", 10), config.data.get("behavior_max_states", 50))
+                # Check if this entrypoint is a scenario implementation
+                scenarios = scenario_implementations.get(ep_path, [])
                 
-                # If this is a representative of a directory group, name the behavior after the directory
-                if group_path != "root" and "index" in os.path.basename(ep_path).lower():
-                    model["name"] = group_path.replace("/", "_")
-                
-                engine.export_behavior(model)
-
+                if not scenarios:
+                    if ep_path in processed_behaviors: continue
+                    model = engine.generate_behavior_model(ep_func, ep_path, calls_map, funcs, sym_meta, config.data.get("behavior_max_depth", 10), config.data.get("behavior_max_states", 50))
+                    model["name"] = engine._get_safe_filename(ep_path)
+                    engine.export_behavior(model)
+                    processed_behaviors.add(ep_path)
+                else:
+                    for scene in scenarios:
+                        # Clean up scenario name from constraints
+                        constraints = scene["constraints"]
+                        scene_label = "_".join(constraints)
+                        # Heuristic: extract value from "X == Y"
+                        match = re.search(r"==\s*['\"]?(\w+)['\"]?", scene_label)
+                        if match: 
+                            scene_label = match.group(1).capitalize()
+                            if scene_label == "Default": scene_label = "Impossible"
+                        # Better parent dir logic for DVWA-like structures
+                        parts = ep_path.split("/")
+                        if len(parts) >= 3 and parts[-2] == "source":
+                            prefix = parts[-3].replace("-", "_").capitalize()
+                        else:
+                            prefix = os.path.basename(os.path.dirname(ep_path)).replace("-", "_").capitalize()
+                            
+                        f_base = os.path.splitext(os.path.basename(ep_path))[0].capitalize()
+                        behavior_id = f"{prefix}_{f_base}_{scene_label}"
+                        
+                        if behavior_id in processed_behaviors: continue
+                        
+                        model = engine.generate_behavior_model(ep_func, ep_path, calls_map, funcs, sym_meta, config.data.get("behavior_max_depth", 10), config.data.get("behavior_max_states", 50))
+                        model["name"] = behavior_id
+                        model["scenario_context"] = constraints
+                        
+                        engine.export_behavior(model)
+                        processed_behaviors.add(behavior_id)
             try:
                 diff_tool = BranchDiff(config, Embedder())
                 engine.export_branch_diff(diff_tool.compare_branches("HEAD", config.data.get("branch_diff", {}).get("base_branch") or diff_tool.get_default_branch()))

@@ -430,8 +430,8 @@ class LibrarianEngine:
             
             for flow in caller_obj.get("flow_paths", []):
                 variable = flow.get("variable", "")
-                if any(x in variable for x in ["$_COOKIE", "$_SESSION", "$_GET['security']"]):
-                    decision_drivers.append(f"{variable}:{flow.get('state')}")
+                if any(x in variable for x in ["$_COOKIE", "$_SESSION", "$_GET", "$_POST", "security"]):
+                    decision_drivers.append(f"{variable}")
 
                 sink = flow.get("sink", "")
                 if sink and (sink == callee_name or sink == callee_base):
@@ -481,7 +481,10 @@ class LibrarianEngine:
                         canonical_current = f_name
                         break
             
-            label = synth_label or self._make_transition_label(parent, current, funcs, sym_meta)
+            label = synth_label
+            if not label:
+                label = self._make_transition_label(parent, current, funcs, sym_meta)
+            
             if label and "[Scenario:" in label:
                 decision_text = label.replace("[Scenario: ", "").rsplit("]", 1)[0].strip()
                 decision_node = f"Decision: {decision_text}"
@@ -546,6 +549,15 @@ class LibrarianEngine:
             yaml.safe_dump(frontmatter, f, default_flow_style=False)
             f.write("---\n\n")
             f.write(f"# Behavior: {name}\n\n")
+            
+            scenario_context = behavior_data.get("scenario_context")
+            if scenario_context:
+                f.write("## Assumed Environmental Context\n\n")
+                f.write("This implementation assumes the following environmental constraints:\n\n")
+                for ctx in scenario_context:
+                    f.write(f"- `{ctx}`\n")
+                f.write("\n")
+                
             is_macro = behavior_data.get("is_macro_map", False)
             f.write(f"## {'Macro System Map' if is_macro else 'State Machine'}\n\n")
             
