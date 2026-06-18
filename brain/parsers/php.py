@@ -196,5 +196,14 @@ def extract_dataflow(code_snippet: str) -> List[Dict[str, Any]]:
             "line": get_line(match.start())
         })
 
+    # 7. Control Flow Interrupts
+    for match in re.finditer(r"\b(break|return)\b\s*;?", code_snippet):
+        dataflow.append({
+            "type": "interrupt",
+            "value": match.group(1),
+            "pos": match.start(),
+            "line": get_line(match.start())
+        })
+
     dataflow.sort(key=lambda x: x.get("pos", 0))
     return dataflow

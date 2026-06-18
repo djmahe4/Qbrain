@@ -201,6 +201,8 @@ class LibrarianEngine:
     def export_symbol(self, symbol_data: dict):
         name = symbol_data.get("name")
         if not name: return
+        # If qualified, extract short name for display
+        display_name = name.split(":")[-1] if ":" in name else name
         safe_name = self._get_safe_filename(name)
         filepath = self._safe_path("symbols", f"{safe_name}.md")
         kind = symbol_data.get("kind", "Function")
@@ -231,7 +233,7 @@ class LibrarianEngine:
             f.write("---\n")
             yaml.safe_dump(frontmatter, f, default_flow_style=False)
             f.write("---\n\n")
-            f.write(f"# {badge} {kind}: {name}\n\n")
+            f.write(f"# {badge} {kind}: {display_name}\n\n")
             if symbol_data.get("line") is not None:
                 f.write(f"**Line:** {symbol_data.get('line')}\n\n")
             if symbol_data.get("docstring"):
@@ -292,7 +294,7 @@ class LibrarianEngine:
             if symbol_data.get("semantic_neighbors"):
                 f.write("## Semantic Neighbors\n")
                 for neighbor, sim in symbol_data["semantic_neighbors"]:
-                    f.write(f"- `[[{neighbor}]]` ({sim * 100:.1f}% similarity)\n")
+                    f.write(f"- `[[{self._get_safe_filename(neighbor)}|{neighbor.split(':')[-1]}]]` ({sim * 100:.1f}% similarity)\n")
                 f.write("\n")
             
             callers = symbol_data.get("callers", [])
@@ -302,11 +304,11 @@ class LibrarianEngine:
                 if callers:
                     f.write("### Inbound Callers\n")
                     for caller in callers:
-                        f.write(f"- `[[{caller}]]` \n")
+                        f.write(f"- `[[{self._get_safe_filename(caller)}|{caller.split(':')[-1]}]]` \n")
                 if callees:
                     f.write("### Outbound Callees\n")
                     for callee in callees:
-                        f.write(f"- `[[{callee}]]` \n")
+                        f.write(f"- `[[{self._get_safe_filename(callee)}|{callee.split(':')[-1]}]]` \n")
                 f.write("\n")
                 
             if symbol_data.get("business_rules"):
@@ -614,7 +616,7 @@ class LibrarianEngine:
                 r = s_meta.get("returns", "—")
                 doc = s_meta.get("docstring", "")
                 summary = doc.split("\n")[0][:100] if doc else "—"
-                f.write(f"| `[[{s}]]` | {pe} | {arch} | {params_str} | `{r}` | {summary} <br> **Invariants:** {invariants_str} |\n")
+                f.write(f"| `[[{self._get_safe_filename(s)}|{s.split(':')[-1]}]]` | {pe} | {arch} | {params_str} | `{r}` | {summary} <br> **Invariants:** {invariants_str} |\n")
             f.write("\n")
 
             all_var_states = {}
@@ -705,7 +707,7 @@ class LibrarianEngine:
             f.write("# Docstring & Quality Invariants Warnings\n\n")
             f.write("| Symbol | File | Warnings |\n")
             f.write("|:---|:---|:---|\n")
-            for w in warnings: f.write(f"| `[[{w['name']}]]` | {w['file']} | {', '.join(w['warnings'])} |\n")
+            for w in warnings: f.write(f"| `[[{self._get_safe_filename(w['name'])}|{w['name'].split(':')[-1]}]]` | {w['file']} | {', '.join(w['warnings'])} |\n")
 
     def export_vulnerabilities(self, vulns: List[dict]):
         filepath = self._safe_path("rules", "vulnerabilities.md")
@@ -717,7 +719,7 @@ class LibrarianEngine:
                 severity = v.get("severity", "LOW")
                 name = v.get("name") or v.get("function") or "unknown"
                 safe_link = v.get("safe_link") or self._get_safe_filename(name)
-                f.write(f"| {severity} | `[[{safe_link}]]` | {v.get('file', 'unknown')} | {v.get('message') or v.get('description', 'unknown')} |\n")
+                f.write(f"| {severity} | `[[{self._get_safe_filename(name)}|{name.split(':')[-1]}]]` | {v.get('file', 'unknown')} | {v.get('message') or v.get('description', 'unknown')} |\n")
 
     def export_hotspots(self, hotspots: dict):
         filepath = self._safe_path("rules", "hotspots.md")
@@ -726,11 +728,11 @@ class LibrarianEngine:
             f.write("## 🏋️ Complexity Hotspots (Highest Mass)\n")
             f.write("| Symbol | File | Mass | Archetype |\n")
             f.write("|:---|:---|:---|:---|\n")
-            for h in hotspots.get("complexity", []): f.write(f"| `[[{h['name']}]]` | {h.get('file', 'unknown')} | {h['mass']:.1f} | {h.get('archetype', '—')} |\n")
+            for h in hotspots.get("complexity", []): f.write(f"| `[[{self._get_safe_filename(h['name'])}|{h['name'].split(':')[-1]}]]` | {h.get('file', 'unknown')} | {h['mass']:.1f} | {h.get('archetype', '—')} |\n")
             f.write("\n## ⚡ Attention Hotspots (Highest Drift / Attention Debt)\n")
             f.write("| Symbol | File | Potential Energy | Archetype |\n")
             f.write("|:---|:---|:---|:---|\n")
-            for h in hotspots.get("attention", []): f.write(f"| `[[{h['name']}]]` | {h.get('file', 'unknown')} | {h['potential_energy']:.2f} | {h.get('archetype', '—')} |\n")
+            for h in hotspots.get("attention", []): f.write(f"| `[[{self._get_safe_filename(h['name'])}|{h['name'].split(':')[-1]}]]` | {h.get('file', 'unknown')} | {h['potential_energy']:.2f} | {h.get('archetype', '—')} |\n")
 
     def export_archetypes(self, groups: dict):
         filepath = self._safe_path("rules", "archetypes.md")
@@ -740,7 +742,7 @@ class LibrarianEngine:
                 title_arch = "-".join([w.capitalize() for w in arch.split("-")])
                 safe_arch = self._get_safe_filename(arch)
                 f.write(f"## {title_arch} (Narrative: [[archetype_{safe_arch}]])\n")
-                for s in symbols[:15]: f.write(f"- `[[{s['name']}]]`{f' (Confidence: {s['confidence']:.2%})' if 'confidence' in s else ''}\n")
+                for s in symbols[:15]: f.write(f"- `[[{self._get_safe_filename(s['name'])}|{s['name'].split(':')[-1]}]]`{f' (Confidence: {s['confidence']:.2%})' if 'confidence' in s else ''}\n")
                 f.write("\n")
 
     def export_branch_diff(self, diff: dict):

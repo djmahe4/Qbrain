@@ -88,15 +88,20 @@ class DataFlowEngine:
                     active_switch_cond = cond_content
                     last_cond = cond_content
                 elif verb == "case" and active_switch_cond:
+                    # Sibling isolation: clear previous case from stack if we don't have a delimiter block
+                    if constraint_stack and active_switch_cond in str(constraint_stack[-1]):
+                        constraint_stack.pop()
                     last_cond = f"{active_switch_cond} == {cond_content}"
                 elif verb == "default" and active_switch_cond:
+                    if constraint_stack and active_switch_cond in str(constraint_stack[-1]):
+                        constraint_stack.pop()
                     last_cond = f"{active_switch_cond} == 'default'"
                 elif not is_loop:
                     last_cond = cond_content
                 
                 if not last_cond and verb == "else": last_cond = "else branch"
             
-            elif a_type == "delimiter":
+            elif a_type == "delimiter" or a_type == "interrupt":
                 val = atom.get("value")
                 if val == "{":
                     if last_cond:
@@ -107,7 +112,9 @@ class DataFlowEngine:
                         popped = constraint_stack.pop()
                         if popped == active_switch_cond:
                             active_switch_cond = None
-            
+                elif val in ("break", "return"):
+                    # Interrupt clears the current branch constraints for choices following it
+                    last_cond = None
             curr_active_constraints = list(set(constraint_stack))
             if last_cond: curr_active_constraints.append(last_cond)
 
