@@ -60,9 +60,9 @@ def test_full_pipeline_circuit(mocker, tmp_path):
     library.sync_library(config, indexer, console)
     
     # 5. Verify Vault
-    symbol_file = os.path.join(vault_path, "symbols", "calculate_total.md")
-    assert os.path.exists(symbol_file)
-    with open(symbol_file, "r") as f:
+    file_doc = os.path.join(vault_path, "files", "math_py.md")
+    assert os.path.exists(file_doc)
+    with open(file_doc, "r", encoding="utf-8") as f:
         content = f.read()
         assert "calculate_total" in content
         assert "math.py" in content

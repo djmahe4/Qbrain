@@ -40,4 +40,4 @@ Tests are executed using `uv` to ensure a consistent environment:
 uv run pytest -v
 ```
 
-All 181 test cases are passing successfully as of 2026-06-15.
+All 195 test cases are passing successfully as of 2026-06-18.

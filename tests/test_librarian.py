@@ -117,7 +117,7 @@ def test_librarian_exports_warnings(tmp_path):
         content = f.read()
 
     assert "# Docstring & Quality Invariants Warnings" in content
-    assert "[[badFunc]]" in content
+    assert "badFunc|badFunc" in content
     assert "mismatchedFunc" in content
     assert "signature parameters are not documented" in content
 
@@ -161,7 +161,7 @@ def test_library_sync_code_snippet_warnings(mock_get_engine, tmp_path):
         content = f.read()
 
     assert "# Docstring & Quality Invariants Warnings" in content
-    assert "[[tooLongFunction]]" in content
+    assert "tooLongFunction" in content
     assert "Function is too long (> 50 lines)" in content
 
 

@@ -32,13 +32,14 @@ def sync_library(config, indexer, console):
             # 1. Retrieve and Qualify Functions
             console.print("Retrieving functions and modules...")
             parser = DocstringParser(indexer)
-            funcs = parser.get_functions_with_docstrings()
+            funcs = [dict(f) for f in parser.get_functions_with_docstrings()]
             for f in funcs:
                 if f.get("file") and f.get("name") and ":" not in f["name"]:
                     f["name"] = f"{f['file']}:{f['name']}"
             
             existing_names = {f["name"] for f in funcs}
-            all_symbols_res = indexer.query_graph("MATCH (n) WHERE n:Function OR n:Method OR n:Module OR n:Class OR n:Interface OR n:Enum RETURN n.name AS name, labels(n) AS labels, n.file_path AS file, n.file AS file_alt")
+            raw_symbols = indexer.query_graph("MATCH (n) WHERE n:Function OR n:Method OR n:Module OR n:Class OR n:Interface OR n:Enum RETURN n.name AS name, labels(n) AS labels, n.file_path AS file, n.file AS file_alt")
+            all_symbols_res = [dict(item) if isinstance(item, dict) else item for item in raw_symbols] if isinstance(raw_symbols, list) else []
             _EXCLUDED_EXTS = {".md", ".json", ".txt", ".yaml", ".yml", ".lock", ".log", ".toml"}
             for item in all_symbols_res:
                 s_name = item.get("name")
@@ -48,6 +49,7 @@ def sync_library(config, indexer, console):
                     if q_name not in existing_names:
                         if any(f_path.lower().endswith(ext) for ext in _EXCLUDED_EXTS): continue
                         funcs.append({"name": q_name, "file": f_path, "labels": item.get("labels", []), "docstring": "", "language": detect_language(f_path.lower())})
+                        existing_names.add(q_name)
             
             short_to_qualified: dict = {}
             for f in funcs:
@@ -237,7 +239,16 @@ def sync_library(config, indexer, console):
 
             try:
                 scanner = VulnerabilityScanner(indexer)
-                scanner.set_data([{**f, "mass": cognitive_info.get(f.get("name"), {}).get("mass", 1.0), "business_score": 0.5} for f in funcs], rules_list)
+                enriched_for_scan = []
+                for f in funcs:
+                    parsed = parser.parse_genome(f)
+                    enriched_for_scan.append({
+                        **f,
+                        "mass": cognitive_info.get(f.get("name"), {}).get("mass", 1.0),
+                        "business_score": 0.5,
+                        "warnings": parsed.get("warnings", []),  # Feed parser warnings to scanner
+                    })
+                scanner.set_data(enriched_for_scan, rules_list)
                 for rv in scanner.run_all_scans():
                     v_msg = rv.get("description") or rv.get("message")
                     vulnerabilities.append({"cwe": rv.get("cwe", "CWE-Unknown"), "severity": rv.get("severity", "LOW"), "function": rv.get("function"), "description": v_msg, "message": v_msg})
@@ -294,7 +305,7 @@ def sync_library(config, indexer, console):
                 loc, sz = 0, 0
                 if os.path.exists(full_p):
                     try:
-                        with open(full_p, "r", errors="ignore") as fo: loc = len(file_obj.readlines())
+                        with open(full_p, "r", errors="ignore") as fo: loc = len(fo.readlines())
                         sz = os.path.getsize(full_p)
                     except Exception: pass
                 f_var_states = {}

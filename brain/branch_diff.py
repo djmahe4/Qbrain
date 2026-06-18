@@ -44,7 +44,8 @@ class BranchDiff:
                 capture_output=True,
                 text=True,
                 check=True,
-                encoding="utf-8"
+                encoding="utf-8",
+                timeout=60  # CWE-400: prevent blocking on slow git operations
             )
             return res.stdout.strip()
         except subprocess.CalledProcessError as e:

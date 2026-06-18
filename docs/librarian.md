@@ -110,11 +110,14 @@ def calculateTrajectory(velocity, angle):
 
 ---
 
-## 5. Behavior Flow Dual-Representation & Sanitization
+## 5. Behavior Flow Enrichment & Sanitization
 
 Behaviors are written to the vault using a hybrid markdown format designed for both human visualization and machine-parsing:
 
 - **Human Visualization**: Mermaid class/state diagrams (`stateDiagram-v2`) showing states, flows, and execution path conditions.
+- **Nested Quote Escaping**: Prevents parse errors in Mermaid state definitions by safely replacing nested double-quotes `"` inside state names with single-quotes `'`.
+- **Dynamic Variable Tracking**: Lists all variables tracked within the behavior scope in a clean table, detailing their types, values, and security/taint states (`TAINTED`, `SAFE`, `CONSTANT`).
+- **Behavior Dataflow Graph**: Visualizes the aggregated execution flows and variable transformations within the behavior as a Mermaid flow diagram (`graph LR`) with safe, auto-mapped node IDs.
 - **State Sanitization**: Spaces, hyphens, and special characters in state names are cleaned using `_state_id` formatting, and aliased using `state "Original Name" as Safe_ID` to prevent Mermaid syntax compiler crashes.
 - **Machine/LLM Representation**: Structured YAML Frontmatter metadata containing states lists, endpoints, triggers, and signatures.
 
@@ -124,7 +127,10 @@ Behaviors are written to the vault using a hybrid markdown format designed for b
 
 The Librarian aggregates repository metadata into dedicated index pages under `rules/` and `changes/`:
 
-1. **Security Vulnerabilities & CWE Violations (`rules/vulnerabilities.md`)**: A consolidated table detailing detected security issues, severity levels, and links to source files/symbols.
+1. **Security Vulnerabilities & CWE Violations (`rules/vulnerabilities.md`)**: A comprehensive security report that aggregates and categorizes all codebase vulnerabilities by CWE. Features include:
+   - **Executive Summary**: Displays a breakdown of vulnerability counts per severity level (CRITICAL, HIGH, MEDIUM, LOW) and lists the top findings.
+   - **CWE-Grouped Violations**: Details every finding with its severity, affected symbol (linked), file path, and description.
+   - **CWE Top 40 Matrix**: Summarizes the current coverage of the security scanner pipeline, mapping detectable CWE classes (e.g. CWE-79 XSS, CWE-89 SQLi, CWE-78 Command Injection, etc.) against detection methods (Taint-to-Sink, Hardcoded Credential Scans, Uncontrolled Loops, etc.).
 2. **Cognitive & Complexity Hotspots (`rules/hotspots.md`)**: High mass functions (complexity hotspots) and high potential energy functions (drift/attention hotspots).
 3. **Semantic Archetypes (`rules/archetypes.md`)**: Symbols grouped by their structural and behavioral roles (e.g., `data-model`, `calculation-engine`, etc.).
 4. **Git Branch Diff (`changes/branch_diff.md`)**: Calculates semantic distance, churn, and relevance scores when comparing the active workspace against the base branch (e.g., `main`).
@@ -154,15 +160,15 @@ During `qbrain library sync`, the system evaluates the structural completeness o
 
 ### Coding Standards & Vibe Auditing
 
-The Librarian runs an exhaustive semantic analysis suite on function code snippets:
+The Librarian runs an exhaustive semantic analysis suite on function code snippets. Violations discovered by the Vibe Auditor are automatically mapped to official CWE references (e.g. CWE-89, CWE-798, CWE-94, CWE-22, etc.) and integrated into the primary vulnerability report:
 
-1. **Security (Vibe Auditor)**:
-   - **Dangerous Functions**: Detects usage of `eval()`, `exec()`, `os.system()`, or `subprocess`.
-   - **Credentials**: Identifies hardcoded passwords, tokens, or API keys in string literals.
-   - **Deserialization**: Flags unsafe `pickle` or `yaml.load` calls without safe loaders.
-   - **Path Traversal**: Warns on unvalidated string concatenation in `open()` calls.
-   - **Permissions**: Detects insecure file permission settings (e.g., `chmod 777`).
-   - **Obfuscation**: Identifies variable aliasing of risky functions (e.g., `h = os.system`).
+1. **Security (Vibe Auditor & CWE Pipeline Integration)**:
+   - **Dangerous Functions**: Detects usage of `eval()`, `exec()`, `os.system()`, or `subprocess` (CWE-94/CWE-78).
+   - **Credentials**: Identifies hardcoded passwords, tokens, or API keys in string literals (CWE-798).
+   - **Deserialization**: Flags unsafe `pickle` or `yaml.load` calls without safe loaders (CWE-502).
+   - **Path Traversal**: Warns on unvalidated string concatenation in `open()` calls (CWE-22).
+   - **Permissions**: Detects insecure file permission settings (e.g., `chmod 777`) (CWE-276/CWE-732).
+   - **Obfuscation**: Identifies variable aliasing of risky functions (e.g., `h = os.system`) (CWE-94).
 
 2. **Robustness & Async Safety**:
    - **HTTP Timeouts**: Warns if `requests` calls are missing an explicit `timeout`.

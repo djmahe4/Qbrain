@@ -40,7 +40,8 @@ class SystemicAuditor:
             # 1. Identify new tainted variables in this function
             new_tainted = set()
             for var, state in local_states.items():
-                if state == "TAINTED":
+                # state is a dict: {"state": "TAINTED", "type": ..., ...}
+                if isinstance(state, dict) and state.get("state") == "TAINTED":
                     new_tainted.add(var)
             
             # 2. Check for Sinks (Terminal Points)

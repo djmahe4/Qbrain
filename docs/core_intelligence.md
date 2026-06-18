@@ -85,5 +85,22 @@ Analyzes code snippets to track variable lifecycles, states, and dataflow paths.
   - **Source Detection**: Identifies external input entrypoints (e.g., `$_GET`, `request.args`).
   - **Sanitization Tracking**: Recognizes security-critical sanitization functions (e.g., `htmlspecialchars`).
   - **Sink Identification**: Maps data arrival at dangerous or terminal locations (e.g., `echo`, `query`, `os.system`).
+  - **Condition Sink Mapping**: Treats control-flow conditions (`if`, `while`, etc.) containing non-constant variables as contextual sinks to map decision-point dataflows.
   - **Quantum State Assignment**: Classifies variable security states into `TAINTED`, `SAFE`, or `CONSTANT` based on flow history.
   - **Path Mapping**: Builds Mermaid-compatible dataflow paths from sources to sinks.
+
+
+## 9. Vulnerability Scanner (`brain/vuln_scanner.py`)
+
+Runs unified security audits across codebase symbols and tracks vulnerabilities mapped to CWE designations.
+
+- **Class**: `VulnerabilityScanner`
+- **Responsibilities**:
+  - **CWE-862: Missing Authorization**: Scans public APIs and entrypoints to identify missing permission/auth checks.
+  - **CWE-863: Incorrect Authorization**: Cross-references identified authorization rules against the actual code snippet to detect missing verification calls.
+  - **CWE-532: Sensitive Info in Logs**: Identifies exposure of sensitive credentials flowing into print/logging functions.
+  - **CWE-Mapped Taint-to-Sink Dataflow**: Checks if variables marked `TAINTED` reach any of the 25+ monitored PHP/Python sink substrings, mapping them to CWEs (XSS CWE-79, SQLi CWE-89, Command Injection CWE-78, Path Traversal CWE-22, SSRF CWE-918, etc.).
+  - **CWE-798: Hardcoded Credentials**: Scans code blocks for hardcoded passwords, tokens, or private keys.
+  - **CWE-400: Resource Consumption**: Flags unbounded loops (`while True`) that lack clear termination criteria or missing subprocess timeouts.
+  - **CWE-312: Cleartext Storage**: Warns on cleartext writes of sensitive variables to file or persistent storage systems.
+  - **Parser Warning Bridge**: Translates structural warnings emitted by the `language_parser` coding standards engine into official, severity-rated CWE findings.

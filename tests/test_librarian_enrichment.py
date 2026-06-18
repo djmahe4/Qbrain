@@ -53,18 +53,18 @@ def test_librarian_enrichment_export_symbol(tmp_path):
     assert "g = 9.81" in content
 
     assert "## Semantic Neighbors" in content
-    assert "[[simulateOrbit]]" in content
+    assert "simulateOrbit|simulateOrbit" in content
     assert "95.0% similarity" in content
-    assert "[[getGravityField]]" in content
+    assert "getGravityField|getGravityField" in content
     assert "88.0% similarity" in content
 
     assert "## Entanglements" in content
     assert "### Inbound Callers" in content
-    assert "[[runSimulation]]" in content
-    assert "[[main]]" in content
+    assert "runSimulation|runSimulation" in content
+    assert "main|main" in content
     assert "### Outbound Callees" in content
-    assert "[[math.cos]]" in content
-    assert "[[math.sin]]" in content
+    assert "math_cos|math.cos" in content
+    assert "math_sin|math.sin" in content
 
 
 def test_librarian_enrichment_export_vulnerabilities(tmp_path):
@@ -94,11 +94,11 @@ def test_librarian_enrichment_export_vulnerabilities(tmp_path):
     with open(vuln_file, "r", encoding="utf-8") as f:
         content = f.read()
 
-    assert "# 🛡️ Codebase Security Vulnerabilities" in content
+    assert "# 🛡️ Security Vulnerability Report" in content
     assert "| Severity | Symbol | File | Finding |" in content
-    assert "[[login]]" in content
+    assert "login\\|login" in content
     assert "CRITICAL" in content
-    assert "[[exec_cmd]]" in content
+    assert "exec_cmd\\|exec_cmd" in content
     assert "HIGH" in content
 
 
@@ -127,12 +127,12 @@ def test_librarian_enrichment_export_hotspots(tmp_path):
 
     assert "# 📊 Codebase Cognitive & Complexity Hotspots" in content
     assert "## 🏋️ Complexity Hotspots (Highest Mass)" in content
-    assert "[[processData]]" in content
+    assert "processData|processData" in content
     assert "data.py" in content
     assert "25.0" in content
 
     assert "## ⚡ Attention Hotspots (Highest Drift / Attention Debt)" in content
-    assert "[[runJob]]" in content
+    assert "runJob|runJob" in content
     assert "0.95" in content
 
 
@@ -160,10 +160,10 @@ def test_librarian_enrichment_export_archetypes(tmp_path):
 
     assert "# 🧩 Codebase Semantic Archetypes" in content
     assert "## Calculation-Engine" in content
-    assert "[[calculateTrajectory]]" in content
-    assert "[[simulateOrbit]]" in content
+    assert "calculateTrajectory|calculateTrajectory" in content
+    assert "simulateOrbit|simulateOrbit" in content
     assert "## Data-Model" in content
-    assert "[[UserModel]]" in content
+    assert "UserModel|UserModel" in content
 
 
 def test_librarian_enrichment_export_branch_diff(tmp_path):
@@ -248,6 +248,6 @@ def test_librarian_enrichment_export_file(tmp_path):
     assert "- **Language:** python" in content
     assert "- **Lines of Code:** 120" in content
     assert "- **Size:** 4096 bytes" in content
-    assert "## Symbols Defined" in content
+    assert "## Navigation" in content
     assert "- [[calculateTrajectory]]" in content
     assert "- [[simulateOrbit]]" in content

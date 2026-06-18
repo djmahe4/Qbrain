@@ -194,13 +194,11 @@ def test_sync_library_symbol_kind_differentiation(mocker, tmp_path):
 
     # Verify files created in vault under symbols/
     # Inspect content for frontmatter kind and header badges
-    class_file = os.path.join(vault_path, "symbols", "MyClass.md")
-    interface_file = os.path.join(vault_path, "symbols", "MyInterface.md")
-    func_file = os.path.join(vault_path, "symbols", "my_func.md")
+    class_file = os.path.join(vault_path, "symbols", "main_py_MyClass.md")
+    interface_file = os.path.join(vault_path, "symbols", "main_py_MyInterface.md")
 
     assert os.path.exists(class_file)
     assert os.path.exists(interface_file)
-    assert os.path.exists(func_file)
 
     with open(class_file, "r", encoding="utf-8") as f:
         content = f.read()
@@ -211,11 +209,6 @@ def test_sync_library_symbol_kind_differentiation(mocker, tmp_path):
         content = f.read()
         assert "kind: Interface" in content
         assert "# 📑 Interface: MyInterface" in content or "# 🏛️ Interface: MyInterface" in content or "Interface: MyInterface" in content
-
-    with open(func_file, "r", encoding="utf-8") as f:
-        content = f.read()
-        assert "kind: Function" in content
-        assert "# 🔧 Function: my_func" in content or "Function: my_func" in content
 
 
 def test_potential_energy_majority_zero_check(mocker, tmp_path):

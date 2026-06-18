@@ -89,7 +89,8 @@ class Indexer:
                 capture_output=True,
                 text=True,
                 check=True,
-                encoding="utf-8"
+                encoding="utf-8",
+                timeout=120  # CWE-400: prevent indefinite blocking on MCP binary hang
             )
             return result.stdout.strip()
         except subprocess.CalledProcessError as err:
@@ -98,7 +99,12 @@ class Indexer:
             ) from err
         except FileNotFoundError as err:
             raise RuntimeError(
-                f"Could not find codebase-memory-mcp binary '{exec_binary}'."
+                f"codebase-memory-mcp binary not found at '{exec_binary}'. "
+                f"Please ensure it is installed and in your PATH."
+            ) from err
+        except OSError as err:
+            raise RuntimeError(
+                f"Failed to execute codebase-memory-mcp binary: {err}"
             ) from err
 
     def index_repository(self, repo_path: Optional[str] = None) -> Dict[str, Any]:

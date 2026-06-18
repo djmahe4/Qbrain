@@ -195,12 +195,14 @@ class LibrarianEngine:
         """Sanitize path and ensure it's inside the vault."""
         target = os.path.abspath(os.path.join(self.vault_path, subdir, filename))
         if not target.startswith(self.vault_path):
-            raise ValueError(f"Path traversal detected: {target}")
+            raise ValueError(f"Security Risk: Path traversal detected: {target}")
         return target
 
     def export_symbol(self, symbol_data: dict):
         name = symbol_data.get("name")
         if not name: return
+        if ".." in name or name.startswith("/") or name.startswith("\\"):
+            raise ValueError(f"Security Risk: Path traversal detected in symbol name: {name}")
         # If qualified, extract short name for display
         display_name = name.split(":")[-1] if ":" in name else name
         safe_name = self._get_safe_filename(name)
@@ -710,16 +712,174 @@ class LibrarianEngine:
             for w in warnings: f.write(f"| `[[{self._get_safe_filename(w['name'])}|{w['name'].split(':')[-1]}]]` | {w['file']} | {', '.join(w['warnings'])} |\n")
 
     def export_vulnerabilities(self, vulns: List[dict]):
+        """
+        Generate a structured, CWE-grouped vulnerabilities.md in the vault.
+        Includes executive summary, per-CWE findings, taint flow context,
+        and a CWE Top 40 coverage matrix.
+        """
         filepath = self._safe_path("rules", "vulnerabilities.md")
+
+        # CWE reference catalogue (subset of Top 40 relevant to dynamic analysis)
+        CWE_CATALOGUE = {
+            "CWE-79":   ("Cross-site Scripting (XSS)",                "APP Data",    "Tainted user input rendered in HTML output without escaping."),
+            "CWE-89":   ("SQL Injection",                              "DataBase",    "Tainted input concatenated into a SQL query."),
+            "CWE-22":   ("Path Traversal",                             "System Call", "User-controlled input used to construct file paths."),
+            "CWE-78":   ("OS Command Injection",                       "System Call", "Tainted input passed to exec/system/shell_exec."),
+            "CWE-94":   ("Code Injection",                             "System Call", "Tainted input passed to eval/exec/create_function."),
+            "CWE-77":   ("Command Injection",                          "System Call", "User-controlled input injected into shell commands."),
+            "CWE-98":   ("Remote File Inclusion",                      "System Call", "Tainted include/require path from user input."),
+            "CWE-502":  ("Deserialization of Untrusted Data",          "System Call", "Unsafe deserialization (pickle/yaml.load without SafeLoader)."),
+            "CWE-200":  ("Exposure of Sensitive Information",          "Data Flow",   "Sensitive data exposed via response, log, or error output."),
+            "CWE-532":  ("Insertion of Sensitive Information into Log", "Data Flow",   "Sensitive fields (password/token) written to log sinks."),
+            "CWE-862":  ("Missing Authorization",                      "Object Access","Public API/entrypoint with no detected authorization checks."),
+            "CWE-863":  ("Incorrect Authorization",                    "Object Access","Authorization rule present but implementation lacks checks."),
+            "CWE-918":  ("Server-Side Request Forgery (SSRF)",         "System Call", "Tainted URL passed to file_get_contents or HTTP client."),
+            "CWE-798":  ("Use of Hard-coded Credentials",              "Data",        "Credentials or API keys present as string literals in code."),
+            "CWE-400":  ("Uncontrolled Resource Consumption",          "DOS",         "Infinite loops, missing timeouts, or unbounded collection growth."),
+            "CWE-312":  ("Cleartext Storage of Sensitive Information",  "Data Flow",   "Sensitive data written to storage without encryption."),
+            "CWE-601":  ("Open Redirect",                              "System Call", "Tainted value used in HTTP Location header without validation."),
+            "CWE-276":  ("Incorrect Default Permissions",              "Object Access","File permissions set to world-writable (chmod 777)."),
+            "CWE-362":  ("Race Condition",                             "System Call", "Concurrent access to shared state without synchronization."),
+            "CWE-1188": ("Insecure Default Variable Initialization",   "Code Quality","DEBUG=True or other insecure defaults in production code."),
+            "CWE-614":  ("Sensitive Cookie Without Secure Attribute",  "Data Flow",   "Cookie set with tainted value without Secure/HttpOnly flags."),
+        }
+
+        SEVERITY_ICON = {"CRITICAL": "🔴", "HIGH": "🟠", "MEDIUM": "🟡", "LOW": "🔵"}
+
+        # Group findings by CWE
+        by_cwe: Dict[str, List[dict]] = {}
+        for v in vulns:
+            cwe = v.get("cwe", "CWE-Unknown")
+            by_cwe.setdefault(cwe, []).append(v)
+
+        severity_counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+        for v in vulns:
+            sev = v.get("severity", "LOW").upper()
+            if sev in severity_counts:
+                severity_counts[sev] += 1
+
+        detected_cwes = set(by_cwe.keys())
+
         with open(filepath, "w", encoding="utf-8") as f:
-            f.write("# 🛡️ Codebase Security Vulnerabilities\n\n")
-            f.write("| Severity | Symbol | File | Finding |\n")
-            f.write("|:---|:---|:---|:---|\n")
-            for v in vulns:
-                severity = v.get("severity", "LOW")
-                name = v.get("name") or v.get("function") or "unknown"
-                safe_link = v.get("safe_link") or self._get_safe_filename(name)
-                f.write(f"| {severity} | `[[{self._get_safe_filename(name)}|{name.split(':')[-1]}]]` | {v.get('file', 'unknown')} | {v.get('message') or v.get('description', 'unknown')} |\n")
+            # ── Header ────────────────────────────────────────────────────────
+            f.write("---\ntype: security-report\ntags: [security, cwe, vulnerabilities]\n---\n\n")
+            f.write("# 🛡️ Security Vulnerability Report\n\n")
+            f.write("> Auto-generated by Quantum Brain SLM via `qbrain library`.\n")
+            f.write("> All findings are heuristic — verify each one manually before acting.\n\n")
+
+            # ── Executive Summary ─────────────────────────────────────────────
+            f.write("## Executive Summary\n\n")
+            total = len(vulns)
+            f.write(f"**Total Findings:** {total}\n\n")
+            f.write("| Severity | Count |\n|:---|---:|\n")
+            for sev in ["CRITICAL", "HIGH", "MEDIUM", "LOW"]:
+                icon = SEVERITY_ICON.get(sev, "")
+                f.write(f"| {icon} {sev} | {severity_counts[sev]} |\n")
+            f.write("\n")
+
+            if not vulns:
+                f.write("> ✅ No vulnerabilities detected in this scan.\n\n")
+            else:
+                f.write("### Top Findings\n\n")
+                critical_high = [v for v in vulns if v.get("severity", "").upper() in ("CRITICAL", "HIGH")]
+                for v in critical_high[:5]:
+                    icon = SEVERITY_ICON.get(v.get("severity","LOW").upper(),"")
+                    cwe = v.get("cwe", "CWE-?")
+                    fname = (v.get("function") or v.get("name") or "unknown").split(":")[-1]
+                    f.write(f"- {icon} **[{cwe}]** `{fname}` — {(v.get('description') or '')[:120]}\n")
+                f.write("\n")
+
+            # ── Per-CWE Sections ──────────────────────────────────────────────
+            f.write("---\n\n## Findings by CWE\n\n")
+            severity_order = {"CRITICAL": 0, "HIGH": 1, "MEDIUM": 2, "LOW": 3}
+            sorted_cwes = sorted(by_cwe.keys(), key=lambda c: min(
+                severity_order.get(v.get("severity","LOW").upper(), 4) for v in by_cwe[c]
+            ))
+
+            for cwe in sorted_cwes:
+                findings = by_cwe[cwe]
+                cat_info = CWE_CATALOGUE.get(cwe)
+                cwe_title = cat_info[0] if cat_info else "Unknown Weakness"
+                cwe_desc  = cat_info[2] if cat_info else ""
+                cwe_num = cwe.replace("CWE-", "")
+
+                f.write(f"### {cwe}: {cwe_title}\n\n")
+                if cwe_desc:
+                    f.write(f"> {cwe_desc}  \n")
+                f.write(f"> Reference: [MITRE {cwe}](https://cwe.mitre.org/data/definitions/{cwe_num}.html)\n\n")
+                f.write("| Severity | Symbol | File | Finding |\n")
+                f.write("|:---|:---|:---|:---|\n")
+                for v in sorted(findings, key=lambda x: severity_order.get(x.get("severity","LOW").upper(), 4)):
+                    sev = v.get("severity", "LOW").upper()
+                    icon = SEVERITY_ICON.get(sev, "")
+                    name = v.get("function") or v.get("name") or "unknown"
+                    safe_link = v.get("safe_link") or self._get_safe_filename(name)
+                    display_name = name.split(":")[-1]
+                    file_path = v.get("file", "unknown")
+                    desc = (v.get("description") or v.get("message") or "").replace("|", "\\|")
+                    f.write(f"| {icon} {sev} | `[[{safe_link}\\|{display_name}]]` | {file_path} | {desc} |\n")
+                f.write("\n")
+
+            # ── CWE Top 40 Coverage Matrix ────────────────────────────────────
+            f.write("---\n\n## CWE Top 40 Detection Coverage\n\n")
+            f.write("Shows which CWE Top 40 classes this pipeline can detect vs. where it has gaps.\n\n")
+            f.write("| Rank | CWE | Description | Detected | Method |\n")
+            f.write("|:---:|:---|:---|:---:|:---|\n")
+
+            COVERAGE_MAP = [
+                (1,  "CWE-79",  "XSS",                    True,  "Taint→echo/innerHTML sink (`scan_taint_to_sink`)"),
+                (2,  "CWE-787", "Out-of-bounds Write",    False, "Memory — requires ASan/runtime instrumentation"),
+                (3,  "CWE-89",  "SQL Injection",           True,  "Taint→query sink + language_parser regex"),
+                (4,  "CWE-352", "CSRF",                    False, "Needs framework-level token inspection"),
+                (5,  "CWE-22",  "Path Traversal",          True,  "Taint→fopen/open sink (`scan_taint_to_sink`)"),
+                (6,  "CWE-125", "Out-of-bounds Read",     False, "Memory — requires ASan"),
+                (7,  "CWE-78",  "OS Command Injection",   True,  "Taint→exec/system/subprocess sink"),
+                (8,  "CWE-416", "Use After Free",          False, "Memory — requires ASan"),
+                (9,  "CWE-862", "Missing Authorization",  True,  "Business rule + entrypoint heuristic"),
+                (10, "CWE-434", "Unrestricted Upload",    False, "Needs HTTP multipart/form-data analysis"),
+                (11, "CWE-94",  "Code Injection",          True,  "Taint→eval/exec sink + language_parser"),
+                (12, "CWE-20",  "Improper Input Validation",False,"Needs per-field schema validation analysis"),
+                (13, "CWE-77",  "Command Injection",      True,  "Taint→popen/passthru sink"),
+                (14, "CWE-287", "Improper Authentication",False, "Needs session/auth framework analysis"),
+                (15, "CWE-269", "Improper Privilege Mgmt",False, "Business logic — needs policy rules"),
+                (16, "CWE-502", "Deserialization",         True,  "language_parser regex → `scan_from_parser_warnings`"),
+                (17, "CWE-200", "Sensitive Info Exposure", True,  "Log-sink + name heuristic (`scan_sensitive_exposure`)"),
+                (18, "CWE-863", "Incorrect Authorization", True,  "Business rule cross-reference"),
+                (19, "CWE-918", "SSRF",                    True,  "Taint→file_get_contents sink"),
+                (20, "CWE-119", "Buffer Ops",              False, "Memory — requires ASan"),
+                (21, "CWE-476", "NULL Dereference",        False, "Memory — requires ASan"),
+                (22, "CWE-798", "Hardcoded Credentials",  True,  "Regex + language_parser → `scan_hardcoded_credentials`"),
+                (23, "CWE-190", "Integer Overflow",        False, "Memory — requires UBSan"),
+                (24, "CWE-400", "Resource Consumption",   True,  "`scan_resource_consumption` (loops, no timeout)"),
+                (25, "CWE-306", "Missing Auth for Fn",    True,  "Covered by CWE-862 scanner"),
+                (26, "CWE-770", "Allocation w/o Limit",   False, "Needs memory profiling / fuzzing"),
+                (27, "CWE-668", "Exposure to Wrong Sphere",False, "Needs access-control domain model"),
+                (28, "CWE-74",  "Special Element Injection",True, "Partially — via taint→sink coverage"),
+                (29, "CWE-427", "Uncontrolled Search Path",False,"Needs PATH env analysis"),
+                (30, "CWE-639", "Authorization Bypass",   True,  "Partially via CWE-863 scanner"),
+                (31, "CWE-532", "Sensitive Info in Logs", True,  "`scan_sensitive_exposure` + taint→log sink"),
+                (32, "CWE-732", "Incorrect Permissions",  True,  "language_parser chmod 777 check"),
+                (33, "CWE-601", "Open Redirect",           True,  "Taint→header sink"),
+                (34, "CWE-362", "Race Condition",          True,  "language_parser global keyword check"),
+                (35, "CWE-522", "Weak Credentials",        False, "Needs hash strength analysis (bcrypt cost etc.)"),
+                (36, "CWE-276", "Incorrect Default Perms", True,  "language_parser chmod check"),
+                (37, "CWE-203", "Observable Discrepancy", False, "Needs timing analysis"),
+                (38, "CWE-59",  "Link Following",          False, "Needs filesystem symlink analysis"),
+                (39, "CWE-843", "Type Confusion",          False, "Memory — requires type-san"),
+                (40, "CWE-312", "Cleartext Storage",       True,  "`scan_cleartext_storage` (sensitive + write sink)"),
+            ]
+
+            detected_count = sum(1 for _, _, _, d, _ in COVERAGE_MAP if d)
+            for rank, cwe_id, desc, detected, method in COVERAGE_MAP:
+                status = "✅" if detected else "❌"
+                highlight = cwe_id if cwe_id in detected_cwes else cwe_id
+                f.write(f"| {rank} | **{highlight}** | {desc} | {status} | {method} |\n")
+
+            f.write(f"\n**Coverage: {detected_count}/40 CWE Top 40 classes detectable** ")
+            f.write(f"({detected_count * 100 // 40}% detection rate)\n\n")
+            f.write("> ⚠️ Classes marked ❌ require memory instrumentation (ASan/UBSan), ")
+            f.write("runtime fuzzing, or framework-level analysis beyond static regex/taint tracing.\n")
+
 
     def export_hotspots(self, hotspots: dict):
         filepath = self._safe_path("rules", "hotspots.md")
@@ -742,7 +902,9 @@ class LibrarianEngine:
                 title_arch = "-".join([w.capitalize() for w in arch.split("-")])
                 safe_arch = self._get_safe_filename(arch)
                 f.write(f"## {title_arch} (Narrative: [[archetype_{safe_arch}]])\n")
-                for s in symbols[:15]: f.write(f"- `[[{self._get_safe_filename(s['name'])}|{s['name'].split(':')[-1]}]]`{f' (Confidence: {s['confidence']:.2%})' if 'confidence' in s else ''}\n")
+                for s in symbols[:15]:
+                    conf_str = f" (Confidence: {s['confidence']:.2%})" if "confidence" in s else ""
+                    f.write(f"- `[[{self._get_safe_filename(s['name'])}|{s['name'].split(':')[-1]}]]`{conf_str}\n")
                 f.write("\n")
 
     def export_branch_diff(self, diff: dict):

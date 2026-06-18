@@ -100,6 +100,22 @@ class DataFlowEngine:
                     last_cond = cond_content
                 
                 if not last_cond and verb == "else": last_cond = "else branch"
+                
+                # Contextual sinks support: if the condition contains a non-constant variable, treat it as a sink
+                if cond_content:
+                    for var_name, data in var_states.items():
+                        escaped_var = re.escape(var_name)
+                        pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
+                        if re.search(pattern, cond_content):
+                            if data.get("state") != "CONSTANT" or data.get("source") != "internal":
+                                paths.append({
+                                    "source": data.get("source", "unknown"),
+                                    "sink": f"{verb} ({cond_content})",
+                                    "variable": var_name,
+                                    "state": data.get("state", "unknown"),
+                                    "type": data.get("type", "unknown"),
+                                    "line": line
+                                })
             
             elif a_type == "delimiter" or a_type == "interrupt":
                 val = atom.get("value")
