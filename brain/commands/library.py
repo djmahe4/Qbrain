@@ -184,7 +184,9 @@ def sync_library(config, indexer, console):
                 
                 df_res = df_engine.analyze_snippet(f["code_snippet"], lang, registry=registry, redirectors=redirectors)
                 
-                f["variable_states"], f["flow_paths"], f["dataflow"] = df_res.get("variable_states", {}), df_res.get("flow_paths", []), df_res.get("raw_atoms", [])
+                f["variable_states"] = df_res.get("variable_states", {})
+                f["flow_paths"] = df_res.get("flow_paths", [])
+                f["dataflow"] = df_res.get("raw_atoms", [])
 
                 for sync_call in df_res.get("synthesized_calls", []):
                     verb, hint = sync_call.get("verb"), sync_call.get("resolved")
@@ -219,9 +221,10 @@ def sync_library(config, indexer, console):
                             
                             if target_file:
                                 target_file = target_file.lstrip("/").replace("\\", "/")
-                                scenario_implementations.setdefault(target_file, [])
-                                if not any(s["constraints"] == scenario_constraints for s in scenario_implementations[target_file]):
-                                    scenario_implementations[target_file].append({
+                                dispatcher = f_path or name
+                                scenario_implementations.setdefault(dispatcher, [])
+                                if not any(s["constraints"] == scenario_constraints for s in scenario_implementations[dispatcher]):
+                                    scenario_implementations[dispatcher].append({
                                         "dispatcher": f_path or name,
                                         "constraints": scenario_constraints,
                                         "verb": verb
@@ -369,11 +372,12 @@ def sync_library(config, indexer, console):
             finder = EntrypointFinder(repo_path)
             for ep in finder.find_entrypoints():
                 ep_path = ep.get("file", "")
+                print(f"DEBUG: Processing entrypoint: {ep_path}")
                 ep_func = short_to_qualified.get(ep_path) or next((f.get("name") for f in funcs if f.get("file") == ep_path), ep.get("name", "main"))
                 scenarios = scenario_implementations.get(ep_path, [])
                 if not scenarios:
                     if ep_path in processed_behaviors: continue
-                    model = engine.generate_behavior_model(ep_func, ep_path, calls_map, funcs, sym_meta, config.data.get("behavior_max_depth", 10), config.data.get("behavior_max_states", 50))
+                    model = engine.generate_behavior_model(ep_func, ep_path, calls_map, funcs, sym_meta, max_depth=config.data.get("behavior_max_depth", 10), max_states=config.data.get("behavior_max_states", 50))
                     model["name"] = engine._get_safe_filename(ep_path)
                     engine.export_behavior(model)
                     processed_behaviors.add(ep_path)
@@ -389,7 +393,7 @@ def sync_library(config, indexer, console):
                         f_base = os.path.splitext(os.path.basename(ep_path))[0].capitalize()
                         behavior_id = f"{prefix}_{f_base}_{scene_label}"
                         if behavior_id in processed_behaviors: continue
-                        model = engine.generate_behavior_model(ep_func, ep_path, calls_map, funcs, sym_meta, config.data.get("behavior_max_depth", 10), config.data.get("behavior_max_states", 50))
+                        model = engine.generate_behavior_model(ep_func, ep_path, calls_map, funcs, sym_meta, scenario_constraints=constraints, max_depth=config.data.get("behavior_max_depth", 10), max_states=config.data.get("behavior_max_states", 50))
                         model["name"], model["scenario_context"] = behavior_id, constraints
                         engine.export_behavior(model)
                         processed_behaviors.add(behavior_id)

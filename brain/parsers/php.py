@@ -162,6 +162,37 @@ def extract_dataflow(code_snippet: str, redirectors: List[str] = None) -> List[D
     def get_line(pos): return bisect.bisect_right(line_starts, pos)
 
     # 1. Globals Detection
+    # Security Level Detection (DVWA-specific heuristic)
+    if "DVWA" in code_snippet:
+        sec_pattern = re.compile(r"DVWA_WEB_PAGE_TO_ROOT\s*=\s*['\"](.*?)['\"]")
+        # Scan for security level changes in session or DB config if applicable
+        # This is a heuristic to trigger behavior splitting
+        sec_level_check = re.search(r"if\s*\(\s*.*?security_level.*?==\s*['\"](\w+)['\"]", code_snippet, re.IGNORECASE)
+        if sec_level_check:
+            dataflow.append({
+                "type": "scenario_switch",
+                "variable": "security_level",
+                "value": sec_level_check.group(1),
+                "pos": sec_level_check.start(),
+                "line": get_line(sec_level_check.start())
+            })
+
+    # 0. Parameters Detection
+    param_pattern = re.compile(r"function\s+\w+\s*\(([^)]*)\)")
+    for match in param_pattern.finditer(code_snippet):
+        params = match.group(1).split(",")
+        for p in params:
+            p = p.strip()
+            if p.startswith("$"):
+                dataflow.append({
+                    "type": "assignment",
+                    "variable": p,
+                    "operation": "=",
+                    "value": "$_GET['external_input']",
+                    "pos": match.start(),
+                    "line": get_line(match.start())
+                })
+
     for match in re.finditer(r"\$_(SESSION|COOKIE|GET|POST|REQUEST|SERVER|FILES)\[['\"](\w+)['\"]\]", code_snippet):
         dataflow.append({
             "type": "global_state",
@@ -256,7 +287,16 @@ def extract_dataflow(code_snippet: str, redirectors: List[str] = None) -> List[D
                     "pos": match.start(),
                     "line": get_line(match.start())
                 })
-                continue
+        # 5. Sink Atom Generation
+        dataflow.append({
+            "type": "sink",
+            "sink": sink,
+            "args": args,
+            "pos": match.start(),
+            "line": get_line(match.start())
+        })
+
+        continue
 
         if len(args) > 100: args = args[:97] + "..."
         args = re.sub(r'["\'].*?["\']', '"..."', args)
@@ -304,12 +344,39 @@ def extract_dataflow(code_snippet: str, redirectors: List[str] = None) -> List[D
         verb = match.group(1)
         content = (match.group(2) or "").strip()
         if content.endswith(')'): content = content[:-1].strip()
+        if content.endswith(':'): content = content[:-1].strip()
         content = content.replace("\n", " ").replace("\r", "")
         if len(content) > 150: content = content[:147] + "..."
         dataflow.append({
             "type": "condition",
             "verb": verb,
             "content": content,
+            "pos": match.start(),
+            "line": get_line(match.start())
+        })
+        if verb == "switch" and content.startswith("$"):
+            dataflow.append({
+                "type": "usage",
+                "variable": content,
+                "pos": match.start(),
+                "line": get_line(match.start())
+            })
+
+    # 5.5 Case-specific isolation: ensure case/default atoms are clean
+    for atom in dataflow:
+        if atom.get("type") == "condition" and atom.get("verb") in ("case", "default"):
+            atom["content"] = atom["content"].strip(": ")
+
+    # 5.6 Variable Usage Detection (for linking behaviors without assignments)
+    usage_pattern = re.compile(r"(?<!['\"\w\$])(\$[a-zA-Z_\x7f-\xff][a-zA-Z0-9_\x7f-\xff]*)")
+    for match in usage_pattern.finditer(code_snippet):
+        var_name = match.group(1)
+        # Check if already tracked in assignments or global state
+        if any(a.get("variable") == var_name for a in dataflow): continue
+        
+        dataflow.append({
+            "type": "usage",
+            "variable": var_name,
             "pos": match.start(),
             "line": get_line(match.start())
         })

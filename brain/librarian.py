@@ -391,16 +391,30 @@ class LibrarianEngine:
             var_states = file_data.get("variable_states", {})
             if var_states:
                 f.write("## File-Level Data Model\n")
-                f.write("| Variable | Type | State |\n")
-                f.write("|:---|:---|:---|\n")
+                f.write("| Variable | Type | State | Properties / Constraints |\n")
+                f.write("|:---|:---|:---|:---|\n")
                 for var, data in var_states.items():
                     state = data.get("state", "CONSTANT")
                     vtype = data.get("type", "unknown")
-                    source = data.get("source", "internal")
+                    details = []
+                    
                     if state == "CONSTANT" and data.get("value"):
-                        f.write(f"| `{var}` | `{vtype}` | `{state}` (value `{data.get('value')}` from `{source}`) |\n")
-                    else:
-                        f.write(f"| `{var}` | `{vtype}` | `{state}` |\n")
+                        val = data.get("value")
+                        source = data.get("source", "internal")
+                        details.append(f"value `{val}` (from `{source}`)")
+                    
+                    props = data.get("properties", {})
+                    if isinstance(props, dict):
+                        for p, pdata in props.items():
+                            details.append(f"prop `{p}` ({pdata.get('type')})")
+                    
+                    constraints = data.get("constraints", [])
+                    if isinstance(constraints, list):
+                        for c in list(set(constraints)):
+                            details.append(f"check `{c}`")
+                            
+                    details_str = ", ".join(details) if details else "—"
+                    f.write(f"| `{var}` | `{vtype}` | `{state}` | {details_str} |\n")
                 f.write("\n")
 
             symbols_data = file_data.get("symbols_data", [])
@@ -489,10 +503,12 @@ class LibrarianEngine:
             if rtype: parts.append(f"→{rtype}")
         return ", ".join(parts) if parts else ""
 
-    def generate_behavior_model(self, entrypoint_func: str, entrypoint_path: str, calls_map: dict, funcs: List[dict], sym_meta: dict, max_depth: int = 10, max_states: int = 50) -> dict:
+    def generate_behavior_model(self, entrypoint_func: str, entrypoint_path: str, calls_map: dict, funcs: List[dict], sym_meta: dict, scenario_constraints: List[str] = None, max_depth: int = 10, max_states: int = 50) -> dict:
         states: set = {entrypoint_func}
         transitions = []
-        queue = deque([(entrypoint_func, None, 0, None)]) # (current, caller, depth, condition)
+        # Initialize queue with scenario constraints if provided to influence behavior split
+        initial_condition = " AND ".join(scenario_constraints) if scenario_constraints else None
+        queue = deque([(entrypoint_func, None, 0, initial_condition)]) # (current, caller, depth, condition)
         visited = set()
 
         while queue:
@@ -544,6 +560,7 @@ class LibrarianEngine:
         }
 
     def export_behavior(self, behavior_data: dict):
+        print(f"DEBUG: Exporting behavior: {behavior_data.get('name')}")
         name = behavior_data.get("name")
         if not name: return
         safe_name = self._get_safe_filename(name)

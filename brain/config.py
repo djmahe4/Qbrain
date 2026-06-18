@@ -9,10 +9,17 @@ from typing import Any, Dict
 
 DEFAULT_CONFIG = {
     "repo_path": ".",
+    "vault_path": "obsidian_vault",
+    "project_name": "default-project",
     "cbm_binary": "codebase-memory-mcp",
     "embedder_model": "all-MiniLM-L6-v2",
     "lru_maxsize": 512,
     "quantum_gravity_constant": 1.0,
+    "repulsive_constant": 0.1,
+    "business_collapse_threshold": 0.65,
+    "quantum_gravity_constant": 1.0,
+    "repulsive_constant": 0.1,
+    "business_collapse_threshold": 0.65,
     "repulsive_constant": 0.1,
     "business_collapse_threshold": 0.65,
     "cron": {
@@ -138,3 +145,11 @@ class Config:
     @property
     def branch_diff_config(self) -> Dict[str, Any]:
         return self.data.get("branch_diff", DEFAULT_CONFIG["branch_diff"])
+    @property
+    def vault_path(self) -> str:
+        return os.path.abspath(self.data.get("vault_path", DEFAULT_CONFIG["vault_path"]))
+
+    @property
+    def project_name(self) -> str:
+        return self.data.get("project_name", DEFAULT_CONFIG["project_name"])
+

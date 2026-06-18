@@ -27,17 +27,7 @@ class Indexer:
 
     def _get_project_name(self) -> str:
         """Resolve the project name for the current repository."""
-        if self._project_name:
-            return self._project_name
-        
-        target_path = self.config.repo_path.replace("\\", "/").rstrip("/")
-        # Heuristic name used as a first guess to avoid immediate API call in every method
-        heuristic_name = re.sub(r'[^a-zA-Z0-9]+', '-', target_path).strip("-")
-        
-        # We'll stick with heuristic name for now to keep subprocess calls predictable
-        # and only use list_projects if heuristic fails or for specific complex scenarios
-        self._project_name = heuristic_name
-        return self._project_name
+        return self.config.project_name
 
     def _run_cli(self, tool_name: str, args: Dict[str, Any]) -> str:
         """
