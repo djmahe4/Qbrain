@@ -9,6 +9,63 @@ _PHP_RETURNS_RE = re.compile(
     r"@returns?\s+(?:\{([^}]*)\}\s+)?(.*)", re.IGNORECASE
 )
 
+def extract_classes(code: str) -> List[Dict[str, Any]]:
+    """
+    Extracts class, interface, and enum definitions along with their properties and methods.
+    """
+    entities = []
+    # Matches class, interface, enum
+    class_pattern = re.compile(r"\b(class|interface|enum)\s+(\w+)\s*(?:extends\s+[\w\\]+)?\s*(?:implements\s+[\w\\]+(?:\s*,\s*[\w\\]+)*)?\s*\{", re.IGNORECASE)
+    
+    # Find all classes and their contents
+    for match in class_pattern.finditer(code):
+        kind = match.group(1).capitalize()
+        name = match.group(2)
+        start_pos = match.start()
+        
+        # Find matching closing brace (simple count)
+        brace_count = 0
+        end_pos = -1
+        for i in range(match.end() - 1, len(code)):
+            if code[i] == '{': brace_count += 1
+            elif code[i] == '}': brace_count -= 1
+            if brace_count == 0:
+                end_pos = i + 1
+                break
+        
+        if end_pos != -1:
+            class_code = code[match.end():end_pos-1]
+            
+            # Extract properties
+            properties = {}
+            # Matches: public|private|protected [static] $name [= value];
+            # Matches: [visibility] [static] [type] $name [= value];
+            prop_pattern = re.compile(r"\b(public|private|protected|var)?\s+(?:static\s+)?(?:\??\w+\s+)?\$(\w+)\s*(?:=\s*([^;]+))?;", re.IGNORECASE | re.DOTALL)
+            for p_match in prop_pattern.finditer(class_code):
+                vis = p_match.group(1) or "public"
+                if vis.lower() == "var": vis = "public"
+                p_name = p_match.group(2)
+                val = p_match.group(3).strip() if p_match.group(3) else "null"
+                val = re.sub(r"\s+", " ", val) # Flatten multiline values
+                properties[p_name] = {"visibility": vis, "default": val}
+            
+            # Extract methods (simplified)
+            methods = []
+            # Matches: [visibility] [static] function name (
+            method_pattern = re.compile(r"\b(?:(public|private|protected)\s+)?(?:static\s+)?function\s+(\w+)\s*\(", re.IGNORECASE)
+            for m_match in method_pattern.finditer(class_code):
+                methods.append(m_match.group(2))
+            
+            entities.append({
+                "kind": kind,
+                "name": name,
+                "properties": properties,
+                "methods": methods,
+                "pos": start_pos,
+                "end_pos": end_pos
+            })
+    return entities
+
 def extract_globals(code: str) -> Dict[str, Any]:
     """
     Extracts global constants and environment configurations from PHP setup files.
@@ -90,7 +147,7 @@ def extract_business_rules(docstring: str) -> List[str]:
             rules.append(stripped)
     return rules
 
-def extract_dataflow(code_snippet: str) -> List[Dict[str, Any]]:
+def extract_dataflow(code_snippet: str, redirectors: List[str] = None) -> List[Dict[str, Any]]:
     """
     Identifies variable assignments, usages, and synthesized dependencies in PHP.
     Enhanced with line numbers and scenario-driven decision points.
@@ -113,6 +170,28 @@ def extract_dataflow(code_snippet: str) -> List[Dict[str, Any]]:
             "pos": match.start(),
             "line": get_line(match.start())
         })
+
+    # 1.2 Class and Property Detection
+    for entity in extract_classes(code_snippet):
+        kind = entity["kind"]
+        dataflow.append({
+            "type": "symbol_definition",
+            "kind": kind,
+            "variable": entity["name"],
+            "properties": entity["properties"],
+            "methods": entity["methods"],
+            "pos": entity["pos"],
+            "line": get_line(entity["pos"])
+        })
+        # Register properties as global_state-like entities if they are part of a Class symbol
+        for p_name, p_info in entity["properties"].items():
+            dataflow.append({
+                "type": "global_state",
+                "variable": f"{entity['name']}::${p_name}",
+                "source": "internal",
+                "pos": entity["pos"],
+                "line": get_line(entity["pos"])
+            })
 
     # 1.1 Constants Detection (define and const)
     define_pattern = re.compile(r"define\s*\(\s*['\"](\w+)['\"]\s*,\s*(['\"].*?['\"]|[^,)]+)\s*\)", re.IGNORECASE)
@@ -160,20 +239,64 @@ def extract_dataflow(code_snippet: str) -> List[Dict[str, Any]]:
             "line": get_line(match.start())
         })
 
-    # 4. Sinks
-    sink_pattern = re.compile(r"(?<!['\"\w\$])\b(echo|print|query|die|header|setcookie|mysqli_query|mysqli_prepare|eval|exec|system|shell_exec)\b\s*\(?([^;)\n]{1,200})\)?")
+    # 4. Sinks & Redirections
+    sink_pattern = re.compile(r"(?<!['\"\w\$])\b(echo|print|query|die|header|setcookie|mysqli_query|mysqli_prepare|eval|exec|system|shell_exec)\b\s*\(?([^;)\n]{1,200})\)?", re.IGNORECASE)
     for match in sink_pattern.finditer(code_snippet):
+        sink = match.group(1).lower()
         args = match.group(2).strip()
+        
+        # Specialized check for header("Location: ...")
+        if sink == "header":
+            loc_match = re.search(r"Location:\s*(['\"].*?['\"]|[^'\"\s]+)", args, re.IGNORECASE)
+            if loc_match:
+                dataflow.append({
+                    "type": "synthesized_call",
+                    "verb": "redirect",
+                    "raw_path": loc_match.group(1).strip().strip("'\""),
+                    "pos": match.start(),
+                    "line": get_line(match.start())
+                })
+                continue
+
         if len(args) > 100: args = args[:97] + "..."
         args = re.sub(r'["\'].*?["\']', '"..."', args)
         args = args.replace("\n", " ").replace("\r", "")
         dataflow.append({
             "type": "sink",
-            "sink": match.group(1),
+            "sink": sink,
             "args": args,
             "pos": match.start(),
             "line": get_line(match.start())
         })
+    # 5. Generic calls for dynamic detection
+    call_pattern = re.compile(r"(?<!['\"\w\$])(?!\b(if|elseif|else|switch|for|while|foreach|echo|print|die|include|require|header|setcookie|mysqli_query|mysqli_prepare|eval|exec|system|shell_exec)\b)(\w+)\s*\(([^;)\n]{0,200})\)", re.IGNORECASE)
+    for match in call_pattern.finditer(code_snippet):
+        func_name = match.group(2)
+        args = match.group(3).strip()
+        
+        # Dynamic redirection detection (Heuristic + Registry)
+        is_redirect = False
+        if redirectors and func_name in redirectors:
+            is_redirect = True
+        elif "redirect" in func_name.lower():
+            is_redirect = True
+
+        if is_redirect:
+            dataflow.append({
+                "type": "synthesized_call",
+                "verb": "redirect",
+                "raw_path": args.strip().strip("'\""),
+                "pos": match.start(),
+                "line": get_line(match.start())
+            })
+        else:
+            dataflow.append({
+                "type": "call",
+                "function": func_name,
+                "args": args,
+                "pos": match.start(),
+                "line": get_line(match.start())
+            })
 
     # 5. Conditions & Branches (Decision Points)
     cond_pattern = re.compile(r"\b(if|elseif|else if|else|switch|case|default|for|while|foreach)\b(?:\s*\(?([^{:\n]+))?")

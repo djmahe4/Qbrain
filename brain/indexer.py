@@ -213,6 +213,15 @@ class Indexer:
             return json.loads(res)
         except json.JSONDecodeError:
             return {"raw_result": res}
+    def search_code(self, pattern: str, project: Optional[str] = None) -> Dict[str, Any]:
+        """Search code snippets in the graph using a regex pattern."""
+        p_name = project or self._get_project_name()
+        res = self._run_cli("search_code", {"pattern": pattern, "project": p_name})
+        try:
+            return json.loads(res)
+        except json.JSONDecodeError:
+            return {"results": []}
+
     def search_graph(self, pattern: str, label: Optional[str] = None, project: Optional[str] = None) -> List[Dict[str, Any]]:
         """Search for symbols in the graph."""
         p_name = project or self._get_project_name()

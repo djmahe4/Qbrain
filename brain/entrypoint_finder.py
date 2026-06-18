@@ -159,11 +159,9 @@ class EntrypointFinder:
         # 5. Fallback scan
         FALLBACK_NAMES = [
             "main.cpp", "main.c", "main.go", "main.rs",
-            "index.js", "index.ts", "app.py", "main.py","index.php",
-            "server.js", "server.ts", "index.jsx", "index.tsx",
-            "low.php", "medium.php", "high.php", "impossible.php"
+            "index.js", "index.ts", "app.py", "main.py", "index.php",
+            "server.js", "server.ts", "index.jsx", "index.tsx"
         ]
-
         # Heuristic markers for entrypoints in non-standard files
         CONTENT_MARKERS = {
             ".php": [re.compile(r"<\?php.*?(?:require|include)(?:_once)?\s*['\"]", re.DOTALL | re.IGNORECASE)],

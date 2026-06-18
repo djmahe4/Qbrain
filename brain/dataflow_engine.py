@@ -41,7 +41,7 @@ class DataFlowEngine:
             return "number"
         return "dynamic"
 
-    def analyze_snippet(self, code: str, language: str, registry: Any = None, file_path: str = "unknown") -> Dict[str, Any]:
+    def analyze_snippet(self, code: str, language: str, registry: Any = None, file_path: str = "unknown", redirectors: List[str] = None) -> Dict[str, Any]:
         """
         Builds a rich dataflow and structural model from a code snippet.
         """
@@ -68,7 +68,8 @@ class DataFlowEngine:
         # 1. Use Language-Specific Parser to extract raw dataflow atoms
         raw_atoms = []
         if lang == "php":
-            raw_atoms = php.extract_dataflow(code)
+            raw_atoms = php.extract_dataflow(code, redirectors=redirectors)
+
         
         # 2. Process Atoms
         constraint_stack = [] # List of strings
@@ -149,6 +150,35 @@ class DataFlowEngine:
                     "constraints": curr_active_constraints,
                     "choices": [{"value": atom["source"], "constraints": curr_active_constraints, "state": "GLOBAL_STATE"}]
                 }
+            elif a_type == "symbol_definition":
+                s_kind = atom.get("kind")
+                s_name = atom.get("variable")
+                s_props = atom.get("properties", {})
+                s_methods = atom.get("methods", [])
+                
+                if s_name not in var_states:
+                    var_states[s_name] = {
+                        "state": "DEFINITION",
+                        "type": s_kind,
+                        "source": "internal",
+                        "properties": {},
+                        "methods": s_methods,
+                        "constraints": curr_active_constraints,
+                        "choices": []
+                    }
+                
+                for p_name, p_info in s_props.items():
+                    var_states[s_name]["properties"][p_name] = {
+                        "type": p_info.get("type", "unknown"),
+                        "visibility": p_info.get("visibility"),
+                        "default": p_info.get("default"),
+                        "state": "MEMBER"
+                    }
+
+            elif a_type == "call":
+                # Standard call handling - redirects now handled by synthesized_call atoms
+                pass
+
             
             elif a_type == "constant":
                 var = atom["variable"]
@@ -296,10 +326,22 @@ class DataFlowEngine:
             elif a_type == "sink":
                 sink_name = atom["sink"]
                 args = atom["args"]
+                # Redirection tracking now handled by synthesized_call atoms in parsers
+
                 for var_name, data in var_states.items():
                     escaped_var = re.escape(var_name)
                     pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
                     if re.search(pattern, args):
+                        if data.get("state") != "CONSTANT" or data.get("source") != "internal":
+                            paths.append({
+                                "source": data.get("source", "unknown"),
+                                "sink": sink_name,
+                                "variable": var_name,
+                                "state": data.get("state", "unknown"),
+                                "type": data.get("type", "unknown"),
+                                "file_path": file_path,
+                                "line": line
+                            })
                         if data.get("state") != "CONSTANT" or data.get("source") != "internal":
                             paths.append({
                                 "source": data.get("source", "unknown"),

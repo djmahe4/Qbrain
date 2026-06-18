@@ -137,6 +137,29 @@ def sync_library(config, indexer, console):
                             calls_map.setdefault(q_tgt, {}).setdefault("callers", []).append(q_src)
             except Exception as e: console.print(f"[yellow]Warning: could not map function entanglements: {e}[/yellow]")
 
+            # 4.5 Discover redirectors dynamically
+            console.print("Discovering redirectors...")
+            redirectors = []
+            try:
+                # 1. Functions with "redirect" in name
+                redirect_res = indexer.search_graph(".*[Rr]edirect.*", label="Function")
+                if isinstance(redirect_res, dict) and redirect_res.get("results"):
+                    redirectors.extend([r["name"] for r in redirect_res["results"]])
+                
+                # 2. Functions containing "header" code (broad search)
+                header_res = indexer.search_code("header")
+                if isinstance(header_res, dict) and header_res.get("results"):
+                    for r in header_res.get("results", []):
+                        # We'll refine this by checking for Location in the snippet later or just trust common patterns
+                        if r.get("label") in ("Function", "Method"):
+                            redirectors.append(r.get("node"))
+                
+                redirectors = list(set(redirectors))
+                if redirectors:
+                    console.print(f"Found {len(redirectors)} potential redirector symbols.")
+            except Exception as e:
+                console.print(f"[yellow]Warning: redirector discovery failed: {e}[/yellow]")
+
             # 5. Analyze dataflow and detect scenarios
             df_engine = DataFlowEngine()
             scenario_implementations = {}
@@ -159,7 +182,8 @@ def sync_library(config, indexer, console):
                     try: f["code_snippet"] = indexer.get_code_snippet(name).get("code") or ""
                     except Exception: f["code_snippet"] = ""
                 
-                df_res = df_engine.analyze_snippet(f["code_snippet"], lang, registry=registry)
+                df_res = df_engine.analyze_snippet(f["code_snippet"], lang, registry=registry, redirectors=redirectors)
+                
                 f["variable_states"], f["flow_paths"], f["dataflow"] = df_res.get("variable_states", {}), df_res.get("flow_paths", []), df_res.get("raw_atoms", [])
 
                 for sync_call in df_res.get("synthesized_calls", []):
@@ -167,26 +191,41 @@ def sync_library(config, indexer, console):
                     if hint:
                         target_node = None
                         clean_hint = hint.replace("{", "").replace("}", "").strip("'\" ")
+                        
+                        # Normalize clean_hint if it looks like a path
+                        normalized_hint = clean_hint.replace("\\", "/")
+                        
                         for potential in funcs:
-                            short_p = potential.get("name").split(":")[-1]
-                            if clean_hint == short_p or potential.get("name").endswith(clean_hint):
-                                target_node = potential.get("name")
+                            p_name = potential.get("name")
+                            short_p = p_name.split(":")[-1]
+                            if normalized_hint == short_p or p_name.endswith(normalized_hint):
+                                target_node = p_name
                                 break
-                        final_target = target_node or f"[{verb}] {hint}"
+                        
+                        final_target = target_node or f"[{verb}] {normalized_hint}"
                         scenario_constraints = sync_call.get("scenario_constraints", [])
                         condition = ", ".join(scenario_constraints) if scenario_constraints else None
                         
                         if scenario_constraints:
                             target_file = None
-                            if target_node: target_file = next((p.get("file") for p in funcs if p.get("name") == target_node), None)
-                            elif "/" in clean_hint or "." in clean_hint:
-                                target_file = os.path.normpath(os.path.join(os.path.dirname(f_path), clean_hint)) if f_path else clean_hint
+                            if target_node:
+                                target_file = next((p.get("file") for p in funcs if p.get("name") == target_node), None)
+                            elif "/" in normalized_hint or "." in normalized_hint:
+                                # Resolve relative path
+                                if f_path:
+                                    target_file = os.path.normpath(os.path.join(os.path.dirname(f_path), normalized_hint))
+                                else:
+                                    target_file = normalized_hint
                             
                             if target_file:
-                                target_file = target_file.lstrip("/")
+                                target_file = target_file.lstrip("/").replace("\\", "/")
                                 scenario_implementations.setdefault(target_file, [])
                                 if not any(s["constraints"] == scenario_constraints for s in scenario_implementations[target_file]):
-                                    scenario_implementations[target_file].append({"dispatcher": f_path or name, "constraints": scenario_constraints})
+                                    scenario_implementations[target_file].append({
+                                        "dispatcher": f_path or name,
+                                        "constraints": scenario_constraints,
+                                        "verb": verb
+                                    })
 
                         if (final_target, condition) not in calls_map.get(name, {}).get("callees_detailed", []):
                             calls_map.setdefault(name, {}).setdefault("callees_detailed", []).append((final_target, condition))
@@ -290,7 +329,8 @@ def sync_library(config, indexer, console):
                     "line_range": [int(f.get("line")), int(f.get("end_line"))] if (f.get("line") is not None and f.get("end_line") is not None) else None,
                     "variable_states": f.get("variable_states", {}), "flow_paths": f.get("flow_paths", [])
                 }
-                if symbol_kind in ["Class", "Interface", "Enum"]: engine.export_symbol(symbol_data)
+                if symbol_kind != "Module":
+                    engine.export_symbol(symbol_data)
                 if f_path: file_symbols_data.setdefault(f_path, []).append(symbol_data)
 
             files_map = {}
@@ -341,10 +381,9 @@ def sync_library(config, indexer, console):
                     for scene in scenarios:
                         constraints = scene["constraints"]
                         scene_label = "_".join(constraints)
-                        match = re.search(r"==\s*['\"]?(\w+)['\"]?", scene_label)
-                        if match:
-                            scene_label = match.group(1).capitalize()
-                            if scene_label == "Default": scene_label = "Impossible"
+                        # Clean up label for filename (e.g. Low_Low instead of == 'low')
+                        scene_label = re.sub(r"==\s*['\"]?(\w+)['\"]?", r"\1", scene_label).capitalize()
+                        if scene_label == "Default": scene_label = "Impossible"
                         parts = ep_path.split("/")
                         prefix = parts[-3].replace("-", "_").capitalize() if (len(parts) >= 3 and parts[-2] == "source") else os.path.basename(os.path.dirname(ep_path)).replace("-", "_").capitalize()
                         f_base = os.path.splitext(os.path.basename(ep_path))[0].capitalize()

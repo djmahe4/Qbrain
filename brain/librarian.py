@@ -5,6 +5,7 @@ import json
 import time
 import re
 import hashlib
+from collections import deque
 from typing import Dict, Any, List, Optional, Set
 from contextlib import contextmanager
 from brain.logger import get_logger
@@ -165,13 +166,12 @@ class LibrarianEngine:
         
         if state.startswith("[include]"):
             path = state.replace("[include]", "").strip()
-            path = re.sub(r"\s*\.\s*", " + ", path)
-            return f"Include: {path[:70]}..." if len(path) > 70 else f"Include: {path}"
+            return f"Include: {path}"
         if state.startswith("[require]"):
             path = state.replace("[require]", "").strip()
-            path = re.sub(r"\s*\.\s*", " + ", path)
-            return f"Require: {path[:70]}..." if len(path) > 70 else f"Require: {path}"
-            
+            return f"Require: {path}"
+        if state.startswith("Redirect:"):
+            return state
         sinks = {
             "echo": "Render Output",
             "print": "Log/Display",
@@ -248,11 +248,34 @@ class LibrarianEngine:
             var_states = symbol_data.get("variable_states", {})
             flow_paths = symbol_data.get("flow_paths", [])
             
+            # Members section for Classes and Enums
+            if kind in ("Class", "Enum", "Interface"):
+                f.write("## Members\n")
+                # Try both qualified and display name
+                symbol_meta = var_states.get(name) or var_states.get(display_name)
+                methods = symbol_meta.get("methods", []) if isinstance(symbol_meta, dict) else []
+                if methods:
+                    f.write("### Methods\n")
+                    for m in methods:
+                        f.write(f"- `[[{self._get_safe_filename(name + ':' + m)}|{m}]]` \n")
+                    f.write("\n")
+
+                # Extract properties
+                props = symbol_meta.get("properties", {}) if isinstance(symbol_meta, dict) else {}
+                if props:
+                    f.write("### Properties\n")
+                    f.write("| Property | Type | Visibility | Default |\n")
+                    f.write("|:---|:---|:---|:---|\n")
+                    for p_name, p_info in props.items():
+                        f.write(f"| `${p_name}` | `{p_info.get('type', 'unknown')}` | {p_info.get('visibility', '—')} | `{p_info.get('default', '—')}` |\n")
+                    f.write("\n")
+
             if var_states:
                 f.write("## Data Model & Constraints\n")
                 f.write("| Variable | Type | State | Properties / Constraints |\n")
                 f.write("|:---|:---|:---|:---|\n")
                 for var, data in var_states.items():
+                    if var == name: continue # Skip the class definition itself here
                     state = data.get("state", "CONSTANT")
                     vtype = data.get("type", "unknown")
                     details = []
@@ -263,11 +286,15 @@ class LibrarianEngine:
                         details.append(f"value `{val}` (from `{source}`)")
                     
                     props = data.get("properties", {})
-                    for p, pdata in props.items():
-                        details.append(f"prop `{p}` ({pdata.get('type')})")
+                    if isinstance(props, dict):
+                        for p, pdata in props.items():
+                            details.append(f"prop `{p}` ({pdata.get('type')})")
+                    
                     constraints = data.get("constraints", [])
-                    for c in list(set(constraints)):
-                        details.append(f"check `{c}`")
+                    if isinstance(constraints, list):
+                        for c in list(set(constraints)):
+                            details.append(f"check `{c}`")
+                            
                     details_str = ", ".join(details) if details else "—"
                     f.write(f"| `{var}` | `{vtype}` | `{state}` | {details_str} |\n")
                 f.write("\n")
@@ -361,8 +388,6 @@ class LibrarianEngine:
                 f.write(f"- **Lines of Code:** {file_data.get('lines_of_code')}\n")
             if file_data.get("size_bytes") is not None:
                 f.write(f"- **Size:** {file_data.get('size_bytes')} bytes\n")
-            f.write("\n")
-
             var_states = file_data.get("variable_states", {})
             if var_states:
                 f.write("## File-Level Data Model\n")
@@ -467,41 +492,20 @@ class LibrarianEngine:
     def generate_behavior_model(self, entrypoint_func: str, entrypoint_path: str, calls_map: dict, funcs: List[dict], sym_meta: dict, max_depth: int = 10, max_states: int = 50) -> dict:
         states: set = {entrypoint_func}
         transitions = []
-        visited: set = {entrypoint_func}
-        detailed = calls_map.get(entrypoint_func, {}).get("callees_detailed", [])
-        queue = []
-        if detailed:
-            for c, cond in detailed: queue.append((c, entrypoint_func, 1, cond))
-        else:
-            for c in calls_map.get(entrypoint_func, {}).get("callees", []): queue.append((c, entrypoint_func, 1, None))
+        queue = deque([(entrypoint_func, None, 0, None)]) # (current, caller, depth, condition)
+        visited = set()
 
         while queue:
             if len(states) >= max_states: break
-            current, parent, depth, synth_label = queue.pop(0)
-            canonical_current = current
-            if current.startswith("[") and "]" in current:
-                parts = current.split("]", 1)
-                hint = parts[1].strip()
-                clean_hint = hint.replace("{", "").replace("}", "").strip("'\" ")
-                for f in funcs:
-                    f_name = f.get("name", "")
-                    if clean_hint == f_name or f_name.endswith(clean_hint) or clean_hint.endswith(f_name):
-                        canonical_current = f_name
-                        break
+            current, caller, depth, condition = queue.popleft()
             
-            label = synth_label
-            if not label:
-                label = self._make_transition_label(parent, current, funcs, sym_meta)
-            
-            if label and "[Scenario:" in label:
-                decision_text = label.replace("[Scenario: ", "").rsplit("]", 1)[0].strip()
-                decision_node = f"Decision: {decision_text}"
-                states.add(decision_node)
-                transitions.append({"from": parent, "to": decision_node})
-                transitions.append({"from": decision_node, "to": current})
-                states.add(current)
-            else:
-                transitions.append({"from": parent, "to": current, "condition": label or None})
+            canonical_current = current.split(":")[-1] if ":" in current else current
+            if caller:
+                transitions.append({
+                    "from": caller,
+                    "to": current,
+                    "label": condition or "calls"
+                })
                 states.add(current)
             
             if depth < max_depth:
@@ -520,13 +524,16 @@ class LibrarianEngine:
                                 if atom.get("type") == "synthesized_call":
                                     hint = atom.get("resolved_hint") or atom.get("raw_path")
                                     verb = atom.get("verb", "call")
-                                    synth_name = f"[{verb}] {hint}"
+                                    if verb == "redirect":
+                                        synth_name = f"Redirect: {hint}"
+                                    else:
+                                        synth_name = f"[{verb}] {hint}"
                                 else:
                                     sink_name = atom.get("sink")
                                     args = atom.get("args", "")
                                     synth_name = f"[{sink_name}] {args}"
                                 queue.append((synth_name, current, depth + 1, None))
-
+        
         is_hub = len(transitions) > 15
         return {
             "entrypoint": entrypoint_func,
@@ -590,7 +597,7 @@ class LibrarianEngine:
             for t in transitions:
                 frm = state_aliases.get(t["from"], t["from"])
                 to = state_aliases.get(t["to"], t["to"])
-                cond = t.get("condition")
+                cond = t.get("label")
                 if is_macro:
                     if cond:
                         safe_cond = str(cond).replace("\n", " ").replace('"', "'")
