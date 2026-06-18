@@ -134,6 +134,7 @@ def extract_dataflow(code_snippet: str) -> List[Dict[str, Any]]:
             "pos": match.start(),
             "line": get_line(match.start())
         })
+
     # 2. Assignments
     assign_pattern = re.compile(r"(?<!['\"\w\$])(\$[\w\->\[\]'\" ]+)\s*([\.\+\-\*\/]?=)\s*([^;]+);")
     for match in assign_pattern.finditer(code_snippet):
@@ -160,11 +161,12 @@ def extract_dataflow(code_snippet: str) -> List[Dict[str, Any]]:
         })
 
     # 4. Sinks
-    sink_pattern = re.compile(r"(?<!['\"\w\$])\b(echo|print|query|die|header|setcookie|mysqli_query|mysqli_prepare|eval|exec|system|shell_exec)\b\s*\(?([^;)]{1,200})\)?")
+    sink_pattern = re.compile(r"(?<!['\"\w\$])\b(echo|print|query|die|header|setcookie|mysqli_query|mysqli_prepare|eval|exec|system|shell_exec)\b\s*\(?([^;)\n]{1,200})\)?")
     for match in sink_pattern.finditer(code_snippet):
         args = match.group(2).strip()
-        if len(args) > 50: args = args[:47] + "..."
+        if len(args) > 100: args = args[:97] + "..."
         args = re.sub(r'["\'].*?["\']', '"..."', args)
+        args = args.replace("\n", " ").replace("\r", "")
         dataflow.append({
             "type": "sink",
             "sink": match.group(1),
@@ -174,11 +176,13 @@ def extract_dataflow(code_snippet: str) -> List[Dict[str, Any]]:
         })
 
     # 5. Conditions & Branches (Decision Points)
-    cond_pattern = re.compile(r"\b(if|elseif|else if|else|switch|case|default|for|while|foreach)\b(?:\s*\(?([^{:]+))?")
+    cond_pattern = re.compile(r"\b(if|elseif|else if|else|switch|case|default|for|while|foreach)\b(?:\s*\(?([^{:\n]+))?")
     for match in cond_pattern.finditer(code_snippet):
         verb = match.group(1)
-        content = match.group(2).strip() if match.group(2) else ""
+        content = (match.group(2) or "").strip()
         if content.endswith(')'): content = content[:-1].strip()
+        content = content.replace("\n", " ").replace("\r", "")
+        if len(content) > 150: content = content[:147] + "..."
         dataflow.append({
             "type": "condition",
             "verb": verb,

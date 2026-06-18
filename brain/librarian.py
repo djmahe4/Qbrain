@@ -151,9 +151,13 @@ class LibrarianEngine:
         return safe
 
     def _sanitize_for_table(self, text: str) -> str:
-        """Sanitizes text for use in a markdown table cell."""
+        """Sanitizes text for use in a markdown table cell and mermaid nodes."""
         if not text: return "—"
-        return str(text).replace("\n", "<br>").replace("|", "\\|")
+        # Remove newlines and pipe characters
+        clean = str(text).replace("\n", " ").replace("\r", "").replace("|", "\\|").replace('"', "'")
+        # Limit length to prevent "hallucinations" of large code blocks
+        if len(clean) > 80: clean = clean[:77] + "..."
+        return clean
 
     def _get_semantic_state_label(self, state: str) -> str:
         """Translates technical/raw states into semantic labels."""
@@ -609,9 +613,15 @@ class LibrarianEngine:
                 arch = s_meta.get("archetype", "—")
                 v_states = s_meta.get("variable_states", {})
                 invariants = []
+                invariants = []
                 for v, vdata in v_states.items():
                     if isinstance(vdata, dict) and vdata.get("constraints"):
-                        invariants.extend(vdata["constraints"])
+                        # Clean up and deduplicate constraints
+                        for c in vdata["constraints"]:
+                            # Heuristic: only keep short, logical-looking constraints
+                            if len(c) < 100 and not any(x in c for x in ["{", "}", ";"]):
+                                invariants.append(c)
+                
                 invariants_str = "<br>".join([self._sanitize_for_table(x) for x in list(set(invariants))[:3]]) if invariants else "—"
                 p = s_meta.get("params", [])
                 params_str = ", ".join([str(x) for x in p]) if p else "—"
@@ -671,7 +681,10 @@ class LibrarianEngine:
                 for path in all_flow_paths:
                     src, sink, var = path.get("source", "unknown"), path.get("sink", "unknown"), path.get("variable", "")
                     src_id, sink_id = get_node_id(src), get_node_id(sink)
-                    safe_src, safe_sink, safe_var = str(src).replace('"', "'"), str(sink).replace('"', "'"), str(var).replace('"', "'")
+                    # Aggressive sanitization for mermaid labels
+                    safe_src = self._sanitize_for_table(src)
+                    safe_sink = self._sanitize_for_table(sink)
+                    safe_var = self._sanitize_for_table(var)
                     if var: conn_str = f'    {src_id}["{safe_src}"] -- "{safe_var}" --> {sink_id}["{safe_sink}"]\n'
                     else: conn_str = f'    {src_id}["{safe_src}"] --> {sink_id}["{safe_sink}"]\n'
                     if conn_str not in connections:

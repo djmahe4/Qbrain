@@ -199,29 +199,43 @@ class VulnerabilityScanner:
         """
         CWE-78/79/89/94/22/98/312/532/601/918:
         Detect tainted variables reaching dangerous sinks via DataFlowEngine flow_paths.
+        Deduplicates findings on the same line/pos for the same variable/CWE.
         """
         findings = []
+        seen = set()
+        # Sort map by key length descending to match most specific sink first
+        sorted_sinks = sorted(CWE_SINK_MAP.items(), key=lambda x: len(x[0]), reverse=True)
+        
         for func in self.functions:
             for path in func.get("flow_paths", []):
                 if path.get("state") != "TAINTED":
                     continue
                 sink = (path.get("sink") or "").lower()
-                for sink_kw, (cwe, desc) in CWE_SINK_MAP.items():
+                line = path.get("line")
+                var = path.get("variable")
+                file_path = path.get("file_path") or func.get("file", "unknown")
+                
+                for sink_kw, (cwe, desc) in sorted_sinks:
                     if sink_kw in sink:
-                        line_info = f" at line {path.get('line')}" if path.get("line") else ""
+                        dedup_key = (file_path, line, var, cwe)
+                        if dedup_key in seen:
+                            break
+                        seen.add(dedup_key)
+                        
+                        line_info = f" at line {line}" if line else ""
                         findings.append({
                             "cwe": cwe,
                             "title": desc,
                             "function": func["name"],
-                            "file": func.get("file", "unknown"),
+                            "file": file_path,
                             "severity": "CRITICAL",
                             "description": (
-                                f"{desc}: variable '{path.get('variable')}' "
+                                f"{desc}: variable '{var}' "
                                 f"(source: {path.get('source', 'unknown')}) "
                                 f"reaches sink '{sink}'{line_info}."
                             )
                         })
-                        break  # Only report the highest-priority CWE per path
+                        break  # Only report the highest-priority (most specific) CWE per path
         return findings
 
     # -------------------------------------------------------------------------
@@ -297,7 +311,6 @@ class VulnerabilityScanner:
         for func in self.functions:
             code = func.get("code_snippet", "") or ""
             if sensitive.search(code) and storage_sinks.search(code):
-                # Skip if there's evidence of hashing/encryption
                 if not re.search(r'\b(hash|bcrypt|sha|pbkdf2|encrypt|AES)\b', code, re.IGNORECASE):
                     findings.append({
                         "cwe": "CWE-312",
@@ -316,11 +329,6 @@ class VulnerabilityScanner:
     # Wire language_parser warnings → CWE findings
     # -------------------------------------------------------------------------
     def scan_from_parser_warnings(self) -> List[Dict[str, Any]]:
-        """
-        Convert language_parser.py warning strings into structured CWE findings.
-        Warnings are stored in func['warnings'] when parse_genome() is called.
-        This bridges the gap between the existing warning system and the vuln pipeline.
-        """
         findings = []
         for func in self.functions:
             for warning in func.get("warnings", []):

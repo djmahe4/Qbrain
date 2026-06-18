@@ -41,7 +41,7 @@ class DataFlowEngine:
             return "number"
         return "dynamic"
 
-    def analyze_snippet(self, code: str, language: str, registry: Any = None) -> Dict[str, Any]:
+    def analyze_snippet(self, code: str, language: str, registry: Any = None, file_path: str = "unknown") -> Dict[str, Any]:
         """
         Builds a rich dataflow and structural model from a code snippet.
         """
@@ -50,7 +50,7 @@ class DataFlowEngine:
             
         lang = language.lower()
         var_states = {} # var_name -> {state, type, source, properties: {}, constraints: []}
-        paths = [] # List of {source, sink, variable, state, line}
+        paths = [] # List of {source, sink, variable, state, file_path, line}
         synthesized_calls = []
 
         # Initialize var_states with registry constants if applicable
@@ -59,9 +59,10 @@ class DataFlowEngine:
                 var_states[const_name] = {
                     "state": "CONSTANT",
                     "type": self._infer_type(str(value)),
-                    "source": registry.get_origin(const_name) or "bootstrap",
+                    "source": "internal",
                     "value": value,
-                    "constraints": []
+                    "constraints": [],
+                    "choices": [{"value": str(value), "constraints": [], "state": "CONSTANT"}]
                 }
 
         # 1. Use Language-Specific Parser to extract raw dataflow atoms
@@ -101,19 +102,23 @@ class DataFlowEngine:
                 
                 if not last_cond and verb == "else": last_cond = "else branch"
                 
-                # Contextual sinks support: if the condition contains a non-constant variable, treat it as a sink
-                if cond_content:
+                # Contextual sinks support: if the condition contains a non-constant variable
+                if cond_content and not is_loop:
                     for var_name, data in var_states.items():
                         escaped_var = re.escape(var_name)
                         pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
                         if re.search(pattern, cond_content):
-                            if data.get("state") != "CONSTANT" or data.get("source") != "internal":
+                            # Check if the condition looks like a sink itself (e.g. contains mysqli_query)
+                            # to avoid double-reporting it as both a condition and a sink
+                            is_redundant = any(s in cond_content.lower() for s in ["query", "exec", "eval", "include", "require"])
+                            if data.get("state") != "CONSTANT" and not is_redundant:
                                 paths.append({
                                     "source": data.get("source", "unknown"),
                                     "sink": f"{verb} ({cond_content})",
                                     "variable": var_name,
                                     "state": data.get("state", "unknown"),
                                     "type": data.get("type", "unknown"),
+                                    "file_path": file_path,
                                     "line": line
                                 })
             
@@ -131,6 +136,7 @@ class DataFlowEngine:
                 elif val in ("break", "return"):
                     # Interrupt clears the current branch constraints for choices following it
                     last_cond = None
+
             curr_active_constraints = list(set(constraint_stack))
             if last_cond: curr_active_constraints.append(last_cond)
 
@@ -204,7 +210,6 @@ class DataFlowEngine:
                             source = existing_data.get("source", "external")
                         elif existing_data.get("state") == "SAFE":
                             state = "SAFE"
-                            if existing_data.get("source") != "internal": source = existing_data.get("source")
                 
                 var_states[base_var]["state"] = state
                 var_states[base_var]["source"] = source
@@ -227,11 +232,8 @@ class DataFlowEngine:
 
             elif a_type == "synthesized_call":
                 raw_path = atom["raw_path"]
-                
-                # Initial resolution set for fan-out
                 scenarios = [{"resolved": raw_path, "constraints": []}]
                 
-                # 1. Resolve variables with fan-out support
                 for var, data in var_states.items():
                     if not var.startswith("$"): continue
                     escaped_var = re.escape(var)
@@ -251,16 +253,13 @@ class DataFlowEngine:
                         else:
                             for choice in choices:
                                 val = choice["value"]
-                                # Strip quotes for literal path segments
                                 if (val.startswith("'") and val.endswith("'")) or (val.startswith('"') and val.endswith('"')):
                                     val = val[1:-1]
-                                
                                 new_resolved = re.sub(pattern, str(val), s["resolved"])
                                 new_constraints = list(set(s["constraints"] + choice.get("constraints", [])))
                                 new_scenarios.append({"resolved": new_resolved, "constraints": new_constraints})
                     scenarios = new_scenarios
 
-                # 2. Resolve against registry constants
                 if registry and lang == "php":
                     for const_name in registry.constants:
                         escaped_const = re.escape(const_name)
@@ -270,11 +269,8 @@ class DataFlowEngine:
                             if re.search(pattern, s["resolved"]):
                                 s["resolved"] = re.sub(pattern, str(val), s["resolved"])
                 
-                # 3. Final cleanup and registration
                 for s in scenarios:
                     resolved_hint = s["resolved"]
-                    
-                    # Resolve remaining local constants (not starting with $)
                     for var, data in var_states.items():
                         if var.startswith("$"): continue
                         escaped_var = re.escape(var)
@@ -293,7 +289,7 @@ class DataFlowEngine:
                         "verb": atom["verb"],
                         "raw": raw_path,
                         "resolved": resolved_hint,
-                        "resolved_hint": resolved_hint, # For Librarian compatibility
+                        "resolved_hint": resolved_hint,
                         "line": line,
                         "scenario_constraints": s["constraints"]
                     })
@@ -311,6 +307,7 @@ class DataFlowEngine:
                                 "variable": var_name,
                                 "state": data.get("state", "unknown"),
                                 "type": data.get("type", "unknown"),
+                                "file_path": file_path,
                                 "line": line
                             })
 
