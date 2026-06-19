@@ -263,8 +263,14 @@ class DataFlowEngine:
                     state = "TAINTED"
                     source = "external"
                 elif state == "CONSTANT": 
-                    state = "DYNAMIC" 
-                    source = "internal"
+                    # Keep CONSTANT if the assigned value is a literal constant expression
+                    # i.e., type is string/number/boolean and doesn't contain other variables
+                    is_const_literal = inferred_type in ("string", "number", "boolean") and not any(
+                        v in val_raw for v in var_states if v.startswith("$")
+                    )
+                    if not is_const_literal:
+                        state = "DYNAMIC" 
+                        source = "internal"
                 if is_sanitized: state = "SAFE"
                     
                 for existing_var, existing_data in var_states.items():
@@ -368,18 +374,19 @@ class DataFlowEngine:
                     escaped_var = re.escape(var_name)
                     pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
                     if re.search(pattern, args):
-                        path = {
-                            "source": data.get("source", "unknown"),
-                            "sink": sink_name,
-                            "variable": var_name,
-                            "state": data.get("state", "unknown"),
-                            "type": data.get("type", "unknown"),
-                            "file_path": file_path,
-                            "line": line,
-                            "constraints": [c for choice in data.get("choices", []) for c in choice.get("constraints", [])]
-                        }
-                        if path not in paths:
-                            paths.append(path)
+                        if data.get("state") != "CONSTANT":
+                            path = {
+                                "source": data.get("source", "unknown"),
+                                "sink": sink_name,
+                                "variable": var_name,
+                                "state": data.get("state", "unknown"),
+                                "type": data.get("type", "unknown"),
+                                "file_path": file_path,
+                                "line": line,
+                                "constraints": [c for choice in data.get("choices", []) for c in choice.get("constraints", [])]
+                            }
+                            if path not in paths:
+                                paths.append(path)
         return {
             "variable_states": var_states,
             "flow_paths": [{**dict(t), "constraints": list(dict(t).get("constraints", []))} for t in {tuple(sorted((k, tuple(v) if isinstance(v, list) else v) for k, v in d.items())) for d in paths}],

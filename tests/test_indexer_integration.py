@@ -24,16 +24,20 @@ def indexer(tmp_path):
 
 @patch("subprocess.run")
 def test_run_cli_constructs_correct_command(mock_run, indexer):
-    """_run_cli should build: [binary, 'cli', tool_name, json_args]"""
+    """_run_cli should build: [sys.executable, '-m', 'codebase_memory_mcp', 'cli', tool_name, json_args]"""
     mock_run.return_value = MagicMock(stdout="{}", returncode=0)
     
     indexer._run_cli("index_repository", {"repo_path": "/some/path"})
     
     assert mock_run.called
     cmd = mock_run.call_args[0][0]
-    assert cmd[1] == "cli"
-    assert cmd[2] == "index_repository"
-    args_dict = json.loads(cmd[3])
+    import sys
+    assert cmd[0] == sys.executable
+    assert cmd[1] == "-m"
+    assert cmd[2] == "codebase_memory_mcp"
+    assert cmd[3] == "cli"
+    assert cmd[4] == "index_repository"
+    args_dict = json.loads(cmd[5])
     assert args_dict["repo_path"] == "/some/path"
 
 
@@ -42,11 +46,12 @@ def test_run_cli_falls_back_when_which_returns_none(mock_run, indexer):
     """If shutil.which returns None, the raw binary name is used."""
     mock_run.return_value = MagicMock(stdout="{}", returncode=0)
     
+    indexer.config.data["cbm_binary"] = "cbm-cli"
     with patch("shutil.which", return_value=None):
         indexer._run_cli("list_projects", {})
     
     cmd = mock_run.call_args[0][0]
-    assert "codebase-memory-mcp" in cmd[0]
+    assert "cbm-cli" in cmd[0]
 
 
 @patch("subprocess.run")

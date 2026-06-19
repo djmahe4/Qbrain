@@ -209,8 +209,7 @@ def test_librarian_exports_behavior_with_dataflow_and_variables(tmp_path):
     # Verify state name double quotes are escaped or replaced
     assert "Parse error" not in content
     assert 'state "[require] DVWA_WEB_PAGE_TO_ROOT . "vulnerabilities' not in content
-    # Should be replaced by single quotes:
-    assert "state \"Require: DVWA_WEB_PAGE_TO_ROOT + 'vulnerabilities/javascript/source/{{$vulnerab...\" as _require__DVWA_WEB_PAGE_TO_ROOT____vulnerabilities_" in content
+    assert "state \"Require: DVWA_WEB_PAGE_TO_ROOT . 'vulnerabilities/javascript/source/{{$vulnerabilityFile}}'\"" in content
 
     # Verify Dynamic Variable Tracking section is present
     assert "## Dynamic Variable Tracking" in content

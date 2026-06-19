@@ -13,6 +13,7 @@ from brain.commands import monitor as monitor_cmd
 from brain.commands import query as query_cmd
 from brain.commands import library as library_cmd
 from brain.commands import audit as audit_cmd
+from brain.commands import init as init_cmd
 from brain.evidence_store import EvidenceStore
 from brain.cem_engine import CEMEngine
 from brain.san_engine import SANEngine
@@ -28,15 +29,34 @@ app = typer.Typer(
 console = Console()
 
 
-def get_engine():
-    config = Config()
+def get_engine(repo_path: Optional[str] = None):
+    if not repo_path:
+        global_config_path = os.path.expanduser("~/.qbrain_global.json")
+        if os.path.exists(global_config_path):
+            try:
+                with open(global_config_path, "r", encoding="utf-8") as f:
+                    gdata = json.load(f)
+                    active = gdata.get("active_repo")
+                    if active and os.path.exists(active):
+                        local_config = os.path.join(os.getcwd(), ".quantum-brain.json")
+                        if not os.path.exists(local_config) or "quant-blm" in os.path.abspath(os.getcwd()):
+                            repo_path = active
+            except Exception:
+                pass
+
+    config_path = ".quantum-brain.json"
+    if repo_path:
+        config_path = os.path.join(os.path.abspath(repo_path), ".quantum-brain.json")
+    config = Config(config_path)
+    if repo_path:
+        config.repo_path = os.path.abspath(repo_path)
     indexer = Indexer(config)
     embedder = Embedder(config.embedder_model)
     scorer = QuantumScorer(config, indexer)
     return config, indexer, embedder, scorer
 
-def get_cognitive_engine():
-    config, indexer, embedder, scorer = get_engine()
+def get_cognitive_engine(repo_path: Optional[str] = None):
+    config, indexer, embedder, scorer = get_engine(repo_path)
     store = EvidenceStore(".qbrain-evidence.jsonl")
     cem = CEMEngine()
     san = SANEngine()
@@ -45,9 +65,17 @@ def get_cognitive_engine():
     return config, indexer, embedder, scorer, store, cem, san, cognitive, api
 
 @app.command()
+def init(
+    repo_path: str = typer.Option(".", "--repo", "-r", help="Path to the repository to index"),
+    vault_path: str = typer.Option("obsidian_vault", "--vault", "-v", help="Path to the Obsidian vault directory")
+):
+    """Initialize the configuration file (.quantum-brain.json) and index the repository."""
+    init_cmd.init_project(repo_path, vault_path, console)
+
+@app.command()
 def index(path: Optional[str] = typer.Argument(None, help="Path to index")):
     """Index the repository to populate codebase-memory-mcp graph."""
-    config, indexer, _, _ = get_engine()
+    config, indexer, _, _ = get_engine(path)
     index_cmd.index_repo(path, config, indexer, console)
 
 @app.command()
@@ -148,9 +176,11 @@ app.add_typer(library_app, name="library")
 
 
 @library_app.command("sync")
-def library_sync():
+def library_sync(
+    repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Path to the repository to sync")
+):
     """Sync symbols, behaviors, files, changes, rules to Obsidian vault."""
-    config, indexer, _, _ = get_engine()
+    config, indexer, _, _ = get_engine(repo)
     library_cmd.sync_library(config, indexer, console)
 
 

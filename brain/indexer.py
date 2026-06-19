@@ -27,7 +27,10 @@ class Indexer:
 
     def _get_project_name(self) -> str:
         """Resolve the project name for the current repository."""
-        return self.config.project_name
+        name = getattr(self.config, "project_name", "default-project")
+        if not isinstance(name, str):
+            return "default-project"
+        return name
 
     def _run_cli(self, tool_name: str, args: Dict[str, Any]) -> str:
         """
@@ -35,42 +38,46 @@ class Indexer:
         """
         import sys
         binary = self.config.cbm_binary
-        # Security check: Use absolute path if possible
-        resolved_binary = shutil.which(binary)
-        
-        # If not found globally, check the current virtual environment's bin/Scripts directory
-        if not resolved_binary:
-            venv_bin_dir = os.path.dirname(sys.executable)
-            possible_path = os.path.join(venv_bin_dir, binary)
-            if os.path.exists(possible_path):
-                resolved_binary = possible_path
-            elif sys.platform == "win32":
-                for ext in [".exe", ".cmd", ".bat"]:
-                    p = os.path.join(venv_bin_dir, binary + ext)
-                    if os.path.exists(p):
-                        resolved_binary = p
-                        break
-
-        if resolved_binary:
-             # Ensure the resolved path is actually one of the allowed binaries
-             binary_basename = os.path.basename(resolved_binary).lower()
-        else:
-             binary_basename = os.path.basename(binary).lower()
-
-        allowed_binaries = {"codebase-memory-mcp", "cbm-cli", "qbrain-helper"}
-        
-        if binary_basename.endswith((".exe", ".cmd", ".bat")):
-            binary_basename = os.path.splitext(binary_basename)[0]
-            
-        if binary_basename not in allowed_binaries and not os.environ.get("QBRAIN_ALLOW_UNSAFE_BINARY"):
-            raise RuntimeError(
-                f"Security Risk: Unrecognized or unauthorized binary '{binary}'. "
-                f"Allowed binaries are: {', '.join(allowed_binaries)}."
-            )
-
-        exec_binary = resolved_binary or binary
         args_str = json.dumps(args)
-        cmd = [exec_binary, "cli", tool_name, args_str]
+        if binary in ("codebase-memory-mcp", "codebase_memory_mcp"):
+            cmd = [sys.executable, "-m", "codebase_memory_mcp", "cli", tool_name, args_str]
+            exec_binary = f"{sys.executable} -m codebase_memory_mcp"
+        else:
+            # Security check: Use absolute path if possible
+            resolved_binary = shutil.which(binary)
+            
+            # If not found globally, check the current virtual environment's bin/Scripts directory
+            if not resolved_binary:
+                venv_bin_dir = os.path.dirname(sys.executable)
+                possible_path = os.path.join(venv_bin_dir, binary)
+                if os.path.exists(possible_path):
+                    resolved_binary = possible_path
+                elif sys.platform == "win32":
+                    for ext in [".exe", ".cmd", ".bat"]:
+                        p = os.path.join(venv_bin_dir, binary + ext)
+                        if os.path.exists(p):
+                            resolved_binary = p
+                            break
+
+            if resolved_binary:
+                 # Ensure the resolved path is actually one of the allowed binaries
+                 binary_basename = os.path.basename(resolved_binary).lower()
+            else:
+                 binary_basename = os.path.basename(binary).lower()
+
+            allowed_binaries = {"codebase-memory-mcp", "cbm-cli", "qbrain-helper"}
+            
+            if binary_basename.endswith((".exe", ".cmd", ".bat")):
+                binary_basename = os.path.splitext(binary_basename)[0]
+                
+            if binary_basename not in allowed_binaries and not os.environ.get("QBRAIN_ALLOW_UNSAFE_BINARY"):
+                raise RuntimeError(
+                    f"Security Risk: Unrecognized or unauthorized binary '{binary}'. "
+                    f"Allowed binaries are: {', '.join(allowed_binaries)}."
+                )
+
+            exec_binary = resolved_binary or binary
+            cmd = [exec_binary, "cli", tool_name, args_str]
 
         logger.info(f"Running Indexer CLI tool: {tool_name}")
         try:

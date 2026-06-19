@@ -151,5 +151,13 @@ class Config:
 
     @property
     def project_name(self) -> str:
-        return self.data.get("project_name", DEFAULT_CONFIG["project_name"])
+        name = self.data.get("project_name")
+        if name and name != "default-project":
+            return name
+        # Dynamically compute project name from repo_path
+        repo = self.repo_path
+        import re
+        safe_name = re.sub(r"[^a-zA-Z0-9\-]", "-", repo)
+        safe_name = re.sub(r"-+", "-", safe_name)
+        return safe_name.strip("-")
 
