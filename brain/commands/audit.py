@@ -122,7 +122,7 @@ def audit_vulnerabilities(config, indexer, console):
         df_engine = DataFlowEngine()
         for f in enriched_funcs:
             lang = f.get("language") or "php"
-            df_res = df_engine.analyze_snippet(f["code_snippet"], lang)
+            df_res = df_engine.analyze_snippet(f["code_snippet"], lang, file_path=f.get("file", "unknown"))
             f["variable_states"] = df_res.get("variable_states", {})
             f["flow_paths"] = df_res.get("flow_paths", [])
 

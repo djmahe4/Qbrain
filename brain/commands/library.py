@@ -96,7 +96,8 @@ def sync_library(config, indexer, console):
                         cognitive_info[q_name] = {
                             "mass": float(item.get("mass")) if item.get("mass") is not None else 1.0,
                             "potential_energy": float(item.get("potential_energy")) if item.get("potential_energy") is not None else 0.0,
-                            "archetype": item.get("archetype") or "generic"
+                            "archetype": item.get("archetype") or "generic",
+                            "file": f_path or "unknown"
                         }
             except Exception as e: console.print(f"[yellow]Warning: could not load cognitive metadata from graph: {e}[/yellow]")
 
@@ -107,10 +108,13 @@ def sync_library(config, indexer, console):
                         if ":" not in name:
                             matches = [f["name"] for f in funcs if f["name"].endswith(":" + name)]
                             if len(matches) == 1: name = matches[0]
+                        file_from_name = name.split(":")[0] if ":" in name else "unknown"
                         if name not in cognitive_info:
-                            cognitive_info[name] = {"mass": b.get("support_mass", 1.0), "potential_energy": b.get("potential_energy", 0.0), "archetype": b.get("winner", "generic")}
+                            cognitive_info[name] = {"mass": b.get("support_mass", 1.0), "potential_energy": b.get("potential_energy", 0.0), "archetype": b.get("winner", "generic"), "file": file_from_name}
                         else:
                             cognitive_info[name].update({"mass": b.get("support_mass", cognitive_info[name]["mass"]), "potential_energy": b.get("potential_energy", cognitive_info[name]["potential_energy"]), "archetype": b.get("winner", cognitive_info[name]["archetype"])})
+                            if "file" not in cognitive_info[name]:
+                                cognitive_info[name]["file"] = file_from_name
             except Exception as e: console.print(f"[yellow]Warning: could not merge SQLite beliefs: {e}[/yellow]")
 
             # 4. Query CALLS relationships
@@ -182,7 +186,7 @@ def sync_library(config, indexer, console):
                     try: f["code_snippet"] = indexer.get_code_snippet(name).get("code") or ""
                     except Exception: f["code_snippet"] = ""
                 
-                df_res = df_engine.analyze_snippet(f["code_snippet"], lang, registry=registry, redirectors=redirectors)
+                df_res = df_engine.analyze_snippet(f["code_snippet"], lang, registry=registry, file_path=f_path or "unknown", redirectors=redirectors)
                 
                 f["variable_states"] = df_res.get("variable_states", {})
                 f["flow_paths"] = df_res.get("flow_paths", [])
@@ -293,7 +297,7 @@ def sync_library(config, indexer, console):
                 scanner.set_data(enriched_for_scan, rules_list)
                 for rv in scanner.run_all_scans():
                     v_msg = rv.get("description") or rv.get("message")
-                    vulnerabilities.append({"cwe": rv.get("cwe", "CWE-Unknown"), "severity": rv.get("severity", "LOW"), "function": rv.get("function"), "description": v_msg, "message": v_msg})
+                    vulnerabilities.append({"cwe": rv.get("cwe", "CWE-Unknown"), "severity": rv.get("severity", "LOW"), "function": rv.get("function"), "file": rv.get("file", "unknown"), "description": v_msg, "message": v_msg})
             except Exception as e: console.print(f"[yellow]Warning: could not run security scanner: {e}[/yellow]")
 
             try:
@@ -306,7 +310,17 @@ def sync_library(config, indexer, console):
                     if q_name: mapped_eps.append({"name": q_name, "file": ep_path})
                 for sf in system_auditor.audit_all_entrypoints(mapped_eps):
                     v_desc = f"Global flow: {sf['path']} -> {sf['sink']} ({sf['variable']})"
-                    vulnerabilities.append({"cwe": "CWE-Global", "severity": sf["severity"], "function": sf["path"].split(" -> ")[0], "description": v_desc, "message": v_desc, "safe_link": engine._get_safe_filename(sf["path"].split(" -> ")[0])})
+                    start_func = sf["path"].split(" -> ")[0]
+                    start_file = next((f.get("file") for f in funcs if f.get("name") == start_func), "unknown")
+                    vulnerabilities.append({
+                        "cwe": "CWE-Global",
+                        "severity": sf["severity"],
+                        "function": start_func,
+                        "file": start_file,
+                        "description": v_desc,
+                        "message": v_desc,
+                        "safe_link": engine._get_safe_filename(start_func)
+                    })
             except Exception as e: console.print(f"[yellow]Warning: systemic audit failed: {e}[/yellow]")
             for v in vulnerabilities: v.setdefault("safe_link", engine._get_safe_filename(v.get("function", "unknown")))
 
@@ -357,7 +371,10 @@ def sync_library(config, indexer, console):
 
             engine.export_warnings(all_warnings)
             engine.export_vulnerabilities(vulnerabilities)
-            engine.export_hotspots({"complexity": sorted([{"name": k, "mass": v["mass"], "archetype": v["archetype"]} for k, v in cognitive_info.items()], key=lambda x: x["mass"], reverse=True)[:10], "attention": sorted([{"name": k, "potential_energy": v["potential_energy"], "archetype": v["archetype"]} for k, v in cognitive_info.items()], key=lambda x: x["potential_energy"], reverse=True)[:10]})
+            engine.export_hotspots({
+                "complexity": sorted([{"name": k, "mass": v["mass"], "archetype": v["archetype"], "file": v.get("file", "unknown")} for k, v in cognitive_info.items()], key=lambda x: x["mass"], reverse=True)[:10],
+                "attention": sorted([{"name": k, "potential_energy": v["potential_energy"], "archetype": v["archetype"], "file": v.get("file", "unknown")} for k, v in cognitive_info.items()], key=lambda x: x["potential_energy"], reverse=True)[:10]
+            })
             
             arch_groups = {}
             for k, v in cognitive_info.items():

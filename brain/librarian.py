@@ -257,7 +257,7 @@ class LibrarianEngine:
                 if methods:
                     f.write("### Methods\n")
                     for m in methods:
-                        f.write(f"- `[[{self._get_safe_filename(name + ':' + m)}|{m}]]` \n")
+                        f.write(f"- [[{self._get_safe_filename(name + ':' + m)}|{m}]] \n")
                     f.write("\n")
 
                 # Extract properties
@@ -652,7 +652,7 @@ class LibrarianEngine:
                 r = s_meta.get("returns", "—")
                 doc = s_meta.get("docstring", "")
                 summary = doc.split("\n")[0][:100] if doc else "—"
-                f.write(f"| `[[{self._get_safe_filename(s)}|{s.split(':')[-1]}]]` | {pe} | {arch} | {params_str} | `{r}` | {summary} <br> **Invariants:** {invariants_str} |\n")
+                f.write(f"| [[{self._get_safe_filename(s)}|{s.split(':')[-1]}]] | {pe} | {arch} | {params_str} | `{r}` | {summary} <br> **Invariants:** {invariants_str} |\n")
             f.write("\n")
 
             all_var_states = {}
@@ -746,7 +746,7 @@ class LibrarianEngine:
             f.write("# Docstring & Quality Invariants Warnings\n\n")
             f.write("| Symbol | File | Warnings |\n")
             f.write("|:---|:---|:---|\n")
-            for w in warnings: f.write(f"| `[[{self._get_safe_filename(w['name'])}|{w['name'].split(':')[-1]}]]` | {w['file']} | {', '.join(w['warnings'])} |\n")
+            for w in warnings: f.write(f"| [[{self._get_safe_filename(w['name'])}|{w['name'].split(':')[-1]}]] | {w['file']} | {', '.join(w['warnings'])} |\n")
 
     def export_vulnerabilities(self, vulns: List[dict]):
         """
@@ -854,7 +854,7 @@ class LibrarianEngine:
                     display_name = name.split(":")[-1]
                     file_path = v.get("file", "unknown")
                     desc = (v.get("description") or v.get("message") or "").replace("|", "\\|")
-                    f.write(f"| {icon} {sev} | `[[{safe_link}\\|{display_name}]]` | {file_path} | {desc} |\n")
+                    f.write(f"| {icon} {sev} | [[{safe_link}\\|{display_name}]] | {file_path} | {desc} |\n")
                 f.write("\n")
 
             # ── CWE Top 40 Coverage Matrix ────────────────────────────────────
@@ -925,11 +925,11 @@ class LibrarianEngine:
             f.write("## 🏋️ Complexity Hotspots (Highest Mass)\n")
             f.write("| Symbol | File | Mass | Archetype |\n")
             f.write("|:---|:---|:---|:---|\n")
-            for h in hotspots.get("complexity", []): f.write(f"| `[[{self._get_safe_filename(h['name'])}|{h['name'].split(':')[-1]}]]` | {h.get('file', 'unknown')} | {h['mass']:.1f} | {h.get('archetype', '—')} |\n")
+            for h in hotspots.get("complexity", []): f.write(f"| [[{self._get_safe_filename(h['name'])}|{h['name'].split(':')[-1]}]] | {h.get('file', 'unknown')} | {h['mass']:.1f} | {h.get('archetype', '—')} |\n")
             f.write("\n## ⚡ Attention Hotspots (Highest Drift / Attention Debt)\n")
             f.write("| Symbol | File | Potential Energy | Archetype |\n")
             f.write("|:---|:---|:---|:---|\n")
-            for h in hotspots.get("attention", []): f.write(f"| `[[{self._get_safe_filename(h['name'])}|{h['name'].split(':')[-1]}]]` | {h.get('file', 'unknown')} | {h['potential_energy']:.2f} | {h.get('archetype', '—')} |\n")
+            for h in hotspots.get("attention", []): f.write(f"| [[{self._get_safe_filename(h['name'])}|{h['name'].split(':')[-1]}]] | {h.get('file', 'unknown')} | {h['potential_energy']:.2f} | {h.get('archetype', '—')} |\n")
 
     def export_archetypes(self, groups: dict):
         filepath = self._safe_path("rules", "archetypes.md")
@@ -941,7 +941,7 @@ class LibrarianEngine:
                 f.write(f"## {title_arch} (Narrative: [[archetype_{safe_arch}]])\n")
                 for s in symbols[:15]:
                     conf_str = f" (Confidence: {s['confidence']:.2%})" if "confidence" in s else ""
-                    f.write(f"- `[[{self._get_safe_filename(s['name'])}|{s['name'].split(':')[-1]}]]`{conf_str}\n")
+                    f.write(f"- [[{self._get_safe_filename(s['name'])}|{s['name'].split(':')[-1]}]] {conf_str}\n")
                 f.write("\n")
 
     def export_branch_diff(self, diff: dict):

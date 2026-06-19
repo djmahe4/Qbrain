@@ -213,7 +213,9 @@ class VulnerabilityScanner:
                 sink = (path.get("sink") or "").lower()
                 line = path.get("line")
                 var = path.get("variable")
-                file_path = path.get("file_path") or func.get("file", "unknown")
+                file_path = path.get("file_path")
+                if not file_path or file_path == "unknown":
+                    file_path = func.get("file") or "unknown"
                 
                 for sink_kw, (cwe, desc) in sorted_sinks:
                     if sink_kw in sink:
