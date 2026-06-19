@@ -387,6 +387,10 @@ class DataFlowEngine:
                             }
                             if path not in paths:
                                 paths.append(path)
+            
+            # Clear single-statement condition (no braces) after the first statement in its body
+            if last_cond and a_type in ("assignment", "sink", "call", "usage"):
+                last_cond = None
         return {
             "variable_states": var_states,
             "flow_paths": [{**dict(t), "constraints": list(dict(t).get("constraints", []))} for t in {tuple(sorted((k, tuple(v) if isinstance(v, list) else v) for k, v in d.items())) for d in paths}],

@@ -164,12 +164,11 @@ class LibrarianEngine:
         """Translates technical/raw states into semantic labels."""
         if not state: return "unknown"
         
-        if state.startswith("[include]"):
-            path = state.replace("[include]", "").strip()
-            return f"Include: {path}"
-        if state.startswith("[require]"):
-            path = state.replace("[require]", "").strip()
-            return f"Require: {path}"
+        m_inc_req = re.match(r"^\[(include|require)(_once)?\]\s*(.*)$", state, re.IGNORECASE)
+        if m_inc_req:
+            verb, once, path = m_inc_req.groups()
+            suffix = " (once)" if once else ""
+            return f"{verb.capitalize()}{suffix}: {path}"
         if state.startswith("Redirect:"):
             return state
         sinks = {
@@ -515,7 +514,19 @@ class LibrarianEngine:
             if len(states) >= max_states: break
             current, caller, depth, condition = queue.popleft()
             
-            canonical_current = current.split(":")[-1] if ":" in current else current
+            # Resolve to fully qualified name if current is unqualified
+            q_name = None
+            if current in sym_meta:
+                q_name = current
+            else:
+                for f in funcs:
+                    fname = f.get("name")
+                    if fname == current or fname.endswith(":" + current):
+                        q_name = fname
+                        break
+            
+            lookup_key = q_name or current
+            
             if caller:
                 transitions.append({
                     "from": caller,
@@ -525,15 +536,30 @@ class LibrarianEngine:
                 states.add(current)
             
             if depth < max_depth:
-                if canonical_current not in visited:
-                    visited.add(canonical_current)
-                    detailed_next = calls_map.get(canonical_current, {}).get("callees_detailed", [])
+                if lookup_key not in visited:
+                    visited.add(lookup_key)
+                    detailed_next = calls_map.get(lookup_key, {}).get("callees_detailed", [])
                     if detailed_next:
-                        for nc, cond in detailed_next: queue.append((nc, current, depth + 1, cond))
+                        for nc, cond in detailed_next:
+                            if cond and scenario_constraints:
+                                is_incompatible = False
+                                for sc in scenario_constraints:
+                                    sc_m = re.search(r"([\$\w\(\)\[\]'\"_-]+)\s*==\s*['\"]([\w\.-]+)['\"]", sc)
+                                    cond_m = re.search(r"([\$\w\(\)\[\]'\"_-]+)\s*==\s*['\"]([\w\.-]+)['\"]", cond)
+                                    if sc_m and cond_m:
+                                        sc_var, sc_val = sc_m.groups()
+                                        cond_var, cond_val = cond_m.groups()
+                                        if sc_var == cond_var and sc_val != cond_val:
+                                            is_incompatible = True
+                                            break
+                                if is_incompatible:
+                                    continue
+                            queue.append((nc, current, depth + 1, cond))
                     else:
-                        for nc in calls_map.get(canonical_current, {}).get("callees", []): queue.append((nc, current, depth + 1, None))
+                        for nc in calls_map.get(lookup_key, {}).get("callees", []):
+                            queue.append((nc, current, depth + 1, None))
 
-                    current_obj = next((f for f in funcs if f.get("name") == canonical_current), None)
+                    current_obj = next((f for f in funcs if f.get("name") == lookup_key), None)
                     if current_obj and "dataflow" in current_obj:
                         for atom in current_obj["dataflow"]:
                             if atom.get("type") in ("synthesized_call", "sink"):
@@ -628,15 +654,16 @@ class LibrarianEngine:
             f.write("```\n\n")
             
             f.write("## State Context\n\n")
-            f.write("| State | PE | Archetype | Params | Returns | Summary |\n")
-            f.write("| :--- | ---: | :--- | :--- | :--- | :--- |\n")
+            f.write("| State | PE | Archetype | Params | Returns | Invariants | Summary |\n")
+            f.write("| :--- | ---: | :--- | :--- | :--- | :--- | :--- |\n")
             meta = behavior_data.get("state_meta", {})
             for s in states:
                 s_meta = meta.get(s, {})
                 pe = s_meta.get("potential_energy", "—")
                 arch = s_meta.get("archetype", "—")
+                if arch == "—" and (s.startswith("[") or s.startswith("Redirect:")):
+                    arch = "synthesized"
                 v_states = s_meta.get("variable_states", {})
-                invariants = []
                 invariants = []
                 for v, vdata in v_states.items():
                     if isinstance(vdata, dict) and vdata.get("constraints"):
@@ -646,13 +673,16 @@ class LibrarianEngine:
                             if len(c) < 100 and not any(x in c for x in ["{", "}", ";"]):
                                 invariants.append(c)
                 
-                invariants_str = "<br>".join([self._sanitize_for_table(x) for x in list(set(invariants))[:3]]) if invariants else "—"
+                invariants_str = ", ".join([self._sanitize_for_table(x) for x in list(set(invariants))[:3]]) if invariants else "—"
                 p = s_meta.get("params", [])
                 params_str = ", ".join([str(x) for x in p]) if p else "—"
                 r = s_meta.get("returns", "—")
+                returns_str = f"`{r}`" if r and r != "—" else "—"
                 doc = s_meta.get("docstring", "")
+                display_s = self._sanitize_for_table(s.split(':')[-1])
                 summary = doc.split("\n")[0][:100] if doc else "—"
-                f.write(f"| [[{self._get_safe_filename(s)}|{s.split(':')[-1]}]] | {pe} | {arch} | {params_str} | `{r}` | {summary} <br> **Invariants:** {invariants_str} |\n")
+                summary = self._sanitize_for_table(summary)
+                f.write(f"| [[{self._get_safe_filename(s)}|{display_s}]] | {pe} | {arch} | {params_str} | {returns_str} | {invariants_str} | {summary} |\n")
             f.write("\n")
 
             all_var_states = {}
