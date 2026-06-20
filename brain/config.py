@@ -53,8 +53,9 @@ class Config:
         self._load_rules_config()
 
     def _load_rules_config(self):
-        repo = self.repo_path
-        rules_path = os.path.join(repo, ".qbrain-rules.yaml")
+        rules_path = os.path.join(self.metadata_dir, ".qbrain-rules.yaml")
+        if not os.path.exists(rules_path):
+            rules_path = os.path.join(self.repo_path, ".qbrain-rules.yaml")
         if os.path.exists(rules_path):
             try:
                 import yaml
@@ -145,6 +146,11 @@ class Config:
     @property
     def branch_diff_config(self) -> Dict[str, Any]:
         return self.data.get("branch_diff", DEFAULT_CONFIG["branch_diff"])
+    @property
+    def metadata_dir(self) -> str:
+        path = os.path.join(self.vault_path, ".qbrain")
+        return os.path.abspath(path)
+
     @property
     def vault_path(self) -> str:
         return os.path.abspath(self.data.get("vault_path", DEFAULT_CONFIG["vault_path"]))

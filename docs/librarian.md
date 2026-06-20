@@ -10,14 +10,21 @@ When `setup_vault()` is run, the engine creates the following folder hierarchy u
 
 ```text
 obsidian_vault/
+ ├── .qbrain/               # Dedicated metadata storage (SQLite database, rules configs, logs)
+ │    ├── qbrain-mind-<project>.sqlite
+ │    ├── qbrain-evidence.jsonl
+ │    ├── .qbrain-rules.yaml
+ │    └── .qbrain-taint-labels.yaml
  ├── symbols/               # Exported symbol pages (functions, classes, variables)
  ├── files/                 # File structural maps and file-level metrics
  ├── behaviors/             # User journeys, execution flows, and state machines
+ │    └── _json/            # Machine-parseable state_machine.json sidecars
  ├── changes/
  │    ├── branch_diff.md    # Branch divergence & semantic diff summaries
  │    ├── recent/           # High-relevance commits waiting for inspection
  │    └── archive/          # Archived historical changes
  ├── rules/                 # Extracted coding invariants and business policies
+ │    └── privilege_boundaries.md  # Wiki-linked dynamic auth boundaries mapping
  └── baseline.md            # Original HEAD state baseline snapshot
 ```
 
@@ -110,16 +117,17 @@ def calculateTrajectory(velocity, angle):
 
 ---
 
-## 5. Behavior Flow Enrichment & Sanitization
+## 5. Behavior Flow Enrichment, Sidecars & Sanitization
 
 Behaviors are written to the vault using a hybrid markdown format designed for both human visualization and machine-parsing:
 
 - **Human Visualization**: Mermaid class/state diagrams (`stateDiagram-v2`) showing states, flows, and execution path conditions.
 - **Nested Quote Escaping**: Prevents parse errors in Mermaid state definitions by safely replacing nested double-quotes `"` inside state names with single-quotes `'`.
-- **Dynamic Variable Tracking**: Lists all variables tracked within the behavior scope in a clean table, detailing their types, values, and security/taint states (`TAINTED`, `SAFE`, `CONSTANT`).
-- **Behavior Dataflow Graph**: Visualizes the aggregated execution flows and variable transformations within the behavior as a Mermaid flow diagram (`graph LR`) with safe, auto-mapped node IDs.
-- **State Sanitization**: Spaces, hyphens, and special characters in state names are cleaned using `_state_id` formatting, and aliased using `state "Original Name" as Safe_ID` to prevent Mermaid syntax compiler crashes.
-- **Machine/LLM Representation**: Structured YAML Frontmatter metadata containing states lists, endpoints, triggers, and signatures.
+- **Dynamic Variable Tracking & Semantic Labels**: Lists all variables tracked within the behavior scope in a clean table, detailing their types, values, security/taint states (`TAINTED`, `SAFE`, `CONSTANT`), and **Semantic Labels** (e.g. `USER_ID`, `CREDENTIAL`) dynamically resolved by the `TaintClassifier`.
+- **Behavior Dataflow Graph**: Visualizes the aggregated execution flows and variable transformations within the behavior as a Mermaid flow diagram (`graph LR`) with safe, auto-mapped node IDs, incorporating classified semantic labels directly inside flow connection tags.
+- **Participating Symbols backlinks**: Generates a dedicated backlinks directory referencing real code symbols (methods, functions, classes) that participate in the behavior diagram.
+- **State Pruning & Merging**: Automatically prunes untainted synthesized HTML or dead redirect states to keep diagram structures clean. Consolidates high-arity switch/case branching structures to keep behavior maps from overpopulating.
+- **Machine/LLM Representation (JSON Sidecars)**: Exports complete state machine models as structured JSON files at `behaviors/_json/<name>.state_machine.json` for consumption by external interpreters or downstream testing tools.
 
 ---
 
@@ -131,9 +139,10 @@ The Librarian aggregates repository metadata into dedicated index pages under `r
    - **Executive Summary**: Displays a breakdown of vulnerability counts per severity level (CRITICAL, HIGH, MEDIUM, LOW) and lists the top findings.
    - **CWE-Grouped Violations**: Details every finding with its severity, affected symbol (linked), file path, and description.
    - **CWE Top 40 Matrix**: Summarizes the current coverage of the security scanner pipeline, mapping detectable CWE classes (e.g. CWE-79 XSS, CWE-89 SQLi, CWE-78 Command Injection, etc.) against detection methods (Taint-to-Sink, Hardcoded Credential Scans, Uncontrolled Loops, etc.).
-2. **Cognitive & Complexity Hotspots (`rules/hotspots.md`)**: High mass functions (complexity hotspots) and high potential energy functions (drift/attention hotspots).
-3. **Semantic Archetypes (`rules/archetypes.md`)**: Symbols grouped by their structural and behavioral roles (e.g., `data-model`, `calculation-engine`, etc.).
-4. **Git Branch Diff (`changes/branch_diff.md`)**: Calculates semantic distance, churn, and relevance scores when comparing the active workspace against the base branch (e.g., `main`).
+2. **Dynamic Privilege Boundaries & Auth Gates (`rules/privilege_boundaries.md`)**: Visualizes security zones (Authenticated vs Public) and list discovered auth gates, with backing data stored in `.qbrain/rules/privilege_boundaries.json`.
+3. **Cognitive & Complexity Hotspots (`rules/hotspots.md`)**: High mass functions (complexity hotspots) and high potential energy functions (drift/attention hotspots).
+4. **Semantic Archetypes (`rules/archetypes.md`)**: Symbols grouped by their structural and behavioral roles (e.g., `data-model`, `calculation-engine`, etc.).
+5. **Git Branch Diff (`changes/branch_diff.md`)**: Calculates semantic distance, churn, and relevance scores when comparing the active workspace against the base branch (e.g., `main`).
 
 ---
 

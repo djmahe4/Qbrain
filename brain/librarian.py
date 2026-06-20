@@ -21,6 +21,7 @@ class LibrarianEngine:
         self.repo_path = os.path.abspath(repo_path)
         self.vault_path = os.path.abspath(vault_path)
         self.indexer = indexer
+        self.registry = None
         os.makedirs(self.vault_path, exist_ok=True)
         self.lock_file = os.path.join(self.repo_path, ".qbrain.lock")
 
@@ -133,7 +134,7 @@ class LibrarianEngine:
     def setup_vault(self):
         """Create standard vault directories."""
         dirs = [
-            "symbols", "files", "behaviors", "changes", "changes/recent",
+            "symbols", "files", "behaviors", "behaviors/_json", "changes", "changes/recent",
             "changes/archive", "rules", "narratives"
         ]
         for d in dirs:
@@ -159,6 +160,49 @@ class LibrarianEngine:
         # Limit length to prevent "hallucinations" of large code blocks
         if len(clean) > 80: clean = clean[:77] + "..."
         return clean
+
+    def _escape_for_table_no_truncation(self, text: str) -> str:
+        """Escapes text for markdown table cells without length truncation."""
+        if not text: return "—"
+        return str(text).replace("\n", " ").replace("\r", "").replace("|", "\\|").replace('"', "'")
+
+    def _resolve_expression_variables(self, expr: str, meta: dict, states: list) -> dict:
+        """
+        Recursively finds variable definitions/constants referenced in a state expression.
+        """
+        resolved = {}
+        if not expr:
+            return resolved
+        try:
+            clean_expr = re.sub(r"'[^']*'|\"[^\"]*\"", "", expr)
+            words = re.findall(r"\$?[a-zA-Z_]\w*", clean_expr)
+        except Exception:
+            words = []
+            
+        for word in words:
+            if self.registry:
+                try:
+                    if self.registry.has_constant(word):
+                        val = self.registry.get_constant(word)
+                        origin = self.registry.get_origin(word)
+                        resolved[word] = {"value": val, "source": f"registry (defined in {origin})" if origin else "registry"}
+                        continue
+                    elif self.registry.get_env(word):
+                        val = self.registry.get_env(word)
+                        resolved[word] = {"value": val, "source": "env"}
+                        continue
+                except Exception:
+                    pass
+            
+            for s in states:
+                s_meta = meta.get(s, {})
+                v_states = s_meta.get("variable_states", {})
+                if word in v_states:
+                    v_info = v_states[word]
+                    if isinstance(v_info, dict) and v_info.get("state") == "CONSTANT" and "value" in v_info:
+                        resolved[word] = {"value": v_info["value"], "source": v_info.get("source", "internal")}
+                        break
+        return resolved
 
     def _get_semantic_state_label(self, state: str) -> str:
         """Translates technical/raw states into semantic labels."""
@@ -265,7 +309,7 @@ class LibrarianEngine:
                 if methods:
                     f.write("### Methods\n")
                     for m in methods:
-                        f.write(f"- [[{self._get_safe_filename(name + ':' + m)}\\|{m}]] \n")
+                        f.write(f"- [[symbols/{self._get_safe_filename(name + ':' + m)}\\|{m}]] \n")
                     f.write("\n")
 
                 # Extract properties
@@ -337,7 +381,7 @@ class LibrarianEngine:
             if symbol_data.get("semantic_neighbors"):
                 f.write("## Semantic Neighbors\n")
                 for neighbor, sim in symbol_data["semantic_neighbors"]:
-                    f.write(f"- `[[{self._get_safe_filename(neighbor)}\\|{neighbor.split(':')[-1]}]]` ({sim * 100:.1f}% similarity)\n")
+                    f.write(f"- [[symbols/{self._get_safe_filename(neighbor)}\\|{neighbor.split(':')[-1]}]] ({sim * 100:.1f}% similarity)\n")
                 f.write("\n")
             
             callers = symbol_data.get("callers", [])
@@ -347,11 +391,11 @@ class LibrarianEngine:
                 if callers:
                     f.write("### Inbound Callers\n")
                     for caller in callers:
-                        f.write(f"- `[[{self._get_safe_filename(caller)}\\|{caller.split(':')[-1]}]]` \n")
+                        f.write(f"- [[symbols/{self._get_safe_filename(caller)}\\|{caller.split(':')[-1]}]] \n")
                 if callees:
                     f.write("### Outbound Callees\n")
                     for callee in callees:
-                        f.write(f"- `[[{self._get_safe_filename(callee)}\\|{callee.split(':')[-1]}]]` \n")
+                        f.write(f"- [[symbols/{self._get_safe_filename(callee)}\\|{callee.split(':')[-1]}]] \n")
                 f.write("\n")
                 
             if symbol_data.get("business_rules"):
@@ -377,7 +421,7 @@ class LibrarianEngine:
             if behaviors:
                 f.write("## Related Behaviors\n")
                 for b in sorted(list(set(behaviors))):
-                    f.write(f"- [[{b}]]\n")
+                    f.write(f"- [[behaviors/{self._get_safe_filename(b)}\\|{b}]]\n")
                 f.write("\n")
     def export_file(self, file_data: dict):
         file_path = file_data.get("file_path")
@@ -456,7 +500,7 @@ class LibrarianEngine:
                     sig = s.get("signature") or name
                     doc = (s.get("docstring") or "").split("\n")[0]
                     display_name = name.split(":")[-1] if ":" in name else name
-                    f.write(f"| [[{self._get_safe_filename(name)}\\|{display_name}]] | `{kind}` | {line} | `{sig}` | {doc} |\n")
+                    f.write(f"| [[symbols/{self._get_safe_filename(name)}\\|{display_name}]] | `{kind}` | {line} | `{sig}` | {doc} |\n")
                 f.write("\n")
 
                 all_rules = []
@@ -494,14 +538,14 @@ class LibrarianEngine:
                 f.write("## Navigation\n")
                 for s in symbols:
                     display_s = s.split(":")[-1] if ":" in s else s
-                    f.write(f"- [[{self._get_safe_filename(s)}\\|{display_s}]]\n")
+                    f.write(f"- [[symbols/{self._get_safe_filename(s)}\\|{display_s}]]\n")
                 f.write("\n")
                 
             behaviors = file_data.get("behaviors", [])
             if behaviors:
                 f.write("## Related Behaviors\n")
                 for b in sorted(list(set(behaviors))):
-                    f.write(f"- [[{b}]]\n")
+                    f.write(f"- [[behaviors/{self._get_safe_filename(b)}\\|{b}]]\n")
                 f.write("\n")
 
     def _make_transition_label(self, caller_name: str, callee_name: str, funcs: List[dict], sym_meta: dict) -> str:
@@ -641,9 +685,119 @@ class LibrarianEngine:
         if not name: return
         safe_name = self._get_safe_filename(name)
         filepath = self._safe_path("behaviors", f"{safe_name}.md")
-        states = behavior_data.get("states", [])
-        transitions = behavior_data.get("transitions", [])
+        states = list(behavior_data.get("states", []))
+        transitions = list(behavior_data.get("transitions", []))
+        meta = behavior_data.get("state_meta", {})
         
+        # Track A.1 & C.1: Instantiate TaintClassifier
+        metadata_dir = os.path.join(self.vault_path, ".qbrain")
+        from brain.taint_classifier import TaintClassifier
+        classifier = TaintClassifier(metadata_dir, registry=self.registry)
+
+        # Track B.2.1: Pruning synthesized/HTML redirect states
+        all_flow_paths = []
+        for s in states:
+            s_meta = meta.get(s, {})
+            for path in s_meta.get("flow_paths", []):
+                if isinstance(path, dict) and path not in all_flow_paths:
+                    all_flow_paths.append(path)
+        tainted_state_ids = {p.get("source") for p in all_flow_paths if p.get("source")} | {p.get("sink") for p in all_flow_paths if p.get("sink")}
+        
+        pruned_states = []
+        for s in states:
+            if s in tainted_state_ids or s == behavior_data.get("entrypoint"):
+                pruned_states.append(s)
+                continue
+            s_meta = meta.get(s, {})
+            kind = s_meta.get("kind")
+            if kind == "Synthesized" or s.startswith("[") or s.startswith("Redirect:"):
+                clean_s = s.strip().lower()
+                if (clean_s.startswith("<") or 
+                    "[redirect]" in clean_s or 
+                    "redirect:" in clean_s or 
+                    "location:" in clean_s):
+                    continue
+            pruned_states.append(s)
+        states = pruned_states
+        transitions = [t for t in transitions if t["from"] in states and t["to"] in states]
+
+        # Track A.2: state_machine.json sidecar emission
+        entry_cond = ""
+        entry_cond_var = ""
+        entry_cond_val = ""
+        scenario_context = behavior_data.get("scenario_context") or []
+        if scenario_context:
+            entry_cond = " AND ".join(scenario_context)
+            for cond in scenario_context:
+                m = re.search(r"([\$\w\(\)\[\]'\"_-]+)\s*==\s*['\"]([\w\.-]+)['\"]", cond)
+                if m:
+                    entry_cond_var = m.group(1)
+                    entry_cond_val = m.group(2)
+                    break
+
+        sidecar_states = []
+        for s in states:
+            s_meta = meta.get(s, {})
+            sidecar_states.append({
+                "id": s,
+                "archetype": s_meta.get("archetype", "generic"),
+                "pe": s_meta.get("potential_energy", 0.0),
+                "file": s_meta.get("file", "unknown"),
+                "line": s_meta.get("line")
+            })
+
+        sidecar_taint_flows = []
+        for path in all_flow_paths:
+            var = path.get("variable", "")
+            sidecar_taint_flows.append({
+                "source": path.get("source"),
+                "variable": var,
+                "semantic_label": classifier.classify(var),
+                "state": path.get("state"),
+                "sink": path.get("sink"),
+                "line": path.get("line")
+            })
+
+        sidecar_variables = {}
+        for s in states:
+            s_meta = meta.get(s, {})
+            for var_name, var_info in s_meta.get("variable_states", {}).items():
+                if not isinstance(var_info, dict): continue
+                if var_name not in sidecar_variables:
+                    sidecar_variables[var_name] = {
+                        "state": var_info.get("state", "SAFE"),
+                        "type": var_info.get("type") or "—",
+                        "constraints": list(var_info.get("constraints") or [])
+                    }
+                else:
+                    existing = sidecar_variables[var_name]
+                    merged_c = list(set((existing.get("constraints") or []) + (var_info.get("constraints") or [])))
+                    sidecar_variables[var_name] = {
+                        "state": "TAINTED" if "TAINTED" in (existing["state"], var_info.get("state")) else var_info.get("state"),
+                        "type": var_info.get("type") or existing.get("type") or "—",
+                        "constraints": merged_c
+                    }
+
+        sidecar_model = {
+            "behavior": name,
+            "entry_condition": entry_cond,
+            "entry_condition_var": entry_cond_var,
+            "entry_condition_value": entry_cond_val,
+            "states": sidecar_states,
+            "transitions": transitions,
+            "taint_flows": sidecar_taint_flows,
+            "variables": sidecar_variables
+        }
+        
+        json_dir = os.path.join(self.vault_path, "behaviors", "_json")
+        os.makedirs(json_dir, exist_ok=True)
+        json_path = os.path.join(json_dir, f"{safe_name}.state_machine.json")
+        try:
+            with open(json_path, "w", encoding="utf-8") as json_f:
+                json.dump(sidecar_model, json_f, indent=2, default=str)
+        except Exception as e:
+            print(f"Warning: could not write JSON sidecar: {e}")
+
         frontmatter = {
             "type": "behavior",
             "name": name,
@@ -658,7 +812,6 @@ class LibrarianEngine:
             f.write("---\n\n")
             f.write(f"# Behavior: {name}\n\n")
             
-            scenario_context = behavior_data.get("scenario_context")
             if scenario_context:
                 f.write("## Assumed Environmental Context\n\n")
                 f.write("This implementation assumes the following environmental constraints:\n\n")
@@ -706,7 +859,6 @@ class LibrarianEngine:
             f.write("## State Context\n\n")
             f.write("| State | PE | Archetype | Params | Returns | Invariants | Summary |\n")
             f.write("| :--- | ---: | :--- | :--- | :--- | :--- | :--- |\n")
-            meta = behavior_data.get("state_meta", {})
             for s in states:
                 s_meta = meta.get(s, {})
                 pe = s_meta.get("potential_energy", "—")
@@ -717,9 +869,7 @@ class LibrarianEngine:
                 invariants = []
                 for v, vdata in v_states.items():
                     if isinstance(vdata, dict) and vdata.get("constraints"):
-                        # Clean up and deduplicate constraints
                         for c in vdata["constraints"]:
-                            # Heuristic: only keep short, logical-looking constraints
                             if len(c) < 100 and not any(x in c for x in ["{", "}", ";"]):
                                 invariants.append(c)
                 
@@ -736,61 +886,33 @@ class LibrarianEngine:
                 s_line = s_meta.get("line")
                 s_kind = s_meta.get("kind")
                 
-                # Format the link to avoid broken wiki links and provide precise references
                 if s_kind == "Module" and s_file:
-                    link_str = f"[[{self._get_safe_filename(s_file)}\\|{display_s}]]"
+                    link_str = f"[[files/{self._get_safe_filename(s_file)}\\|{display_s}]]"
                 elif s_kind == "Synthesized" and s_file:
                     line_suffix = f" (L{s_line})" if s_line else ""
-                    link_str = f"[[{self._get_safe_filename(s_file)}\\|{display_s}]]" + line_suffix
+                    link_str = f"[[files/{self._get_safe_filename(s_file)}\\|{display_s}]]" + line_suffix
                 elif s_file:
-                    symbol_link = f"[[{self._get_safe_filename(s)}\\|{display_s}]]"
+                    symbol_link = f"[[symbols/{self._get_safe_filename(s)}\\|{display_s}]]"
                     file_basename = os.path.basename(s_file)
-                    file_link = f"[[{self._get_safe_filename(s_file)}\\|{file_basename}]]"
+                    file_link = f"[[files/{self._get_safe_filename(s_file)}\\|{file_basename}]]"
                     line_suffix = f":{s_line}" if s_line else ""
                     link_str = f"{symbol_link} <br> `in` {file_link}{line_suffix}"
                 else:
-                    link_str = f"[[{self._get_safe_filename(s)}\\|{display_s}]]"
+                    link_str = f"[[symbols/{self._get_safe_filename(s)}\\|{display_s}]]"
                 
                 f.write(f"| {link_str} | {pe} | {arch} | {params_str} | {returns_str} | {invariants_str} | {summary} |\n")
             f.write("\n")
 
-            all_var_states = {}
-            all_flow_paths = []
-            for s in states:
-                s_meta = meta.get(s, {})
-                v_states = s_meta.get("variable_states", {})
-                for var_name, var_info in v_states.items():
-                    if not isinstance(var_info, dict): continue
-                    if var_name not in all_var_states:
-                        all_var_states[var_name] = {
-                            "state": var_info.get("state", "SAFE"),
-                            "type": var_info.get("type") or "—",
-                            "constraints": list(var_info.get("constraints") or [])
-                        }
-                    else:
-                        existing = all_var_states[var_name]
-                        s1, s2 = existing["state"], var_info.get("state", "SAFE")
-                        merged_s = "SAFE"
-                        if "TAINTED" in (s1, s2): merged_s = "TAINTED"
-                        elif "UNSAFE" in (s1, s2): merged_s = "UNSAFE"
-                        elif "CONSTANT" in (s1, s2): merged_s = "CONSTANT"
-                        merged_c = list(set((existing.get("constraints") or []) + (var_info.get("constraints") or [])))
-                        all_var_states[var_name] = {
-                            "state": merged_s,
-                            "type": var_info.get("type") or existing.get("type") or "—",
-                            "constraints": merged_c
-                        }
-                for path in s_meta.get("flow_paths", []):
-                    if isinstance(path, dict) and path not in all_flow_paths: all_flow_paths.append(path)
-            
-            if all_var_states:
+            # Track A.1 Variable and Taint table with Semantic Labels
+            if sidecar_variables:
                 f.write("## Dynamic Variable Tracking\n\n")
-                f.write("| Variable | State | Type | Constraints |\n")
-                f.write("| :--- | :--- | :--- | :--- |\n")
-                for var_name in sorted(all_var_states.keys()):
-                    info = all_var_states[var_name]
+                f.write("| Variable | Semantic Label | State | Type | Constraints |\n")
+                f.write("| :--- | :--- | :--- | :--- | :--- |\n")
+                for var_name in sorted(sidecar_variables.keys()):
+                    info = sidecar_variables[var_name]
+                    sem_lbl = classifier.classify(var_name)
                     constraints_str = ", ".join([self._sanitize_for_table(x) for x in info["constraints"]]) if info["constraints"] else "—"
-                    f.write(f"| `{var_name}` | `{info['state']}` | {info['type']} | {constraints_str} |\n")
+                    f.write(f"| `{var_name}` | `{sem_lbl}` | `{info['state']}` | {info['type']} | {constraints_str} |\n")
                 f.write("\n")
                 
             if all_flow_paths:
@@ -804,16 +926,53 @@ class LibrarianEngine:
                 for path in all_flow_paths:
                     src, sink, var = path.get("source", "unknown"), path.get("sink", "unknown"), path.get("variable", "")
                     src_id, sink_id = get_node_id(src), get_node_id(sink)
-                    # Aggressive sanitization for mermaid labels
                     safe_src = self._sanitize_for_table(src)
                     safe_sink = self._sanitize_for_table(sink)
                     safe_var = self._sanitize_for_table(var)
-                    if var: conn_str = f'    {src_id}["{safe_src}"] -- "{safe_var}" --> {sink_id}["{safe_sink}"]\n'
+                    sem_lbl = classifier.classify(var) if var else ""
+                    lbl_suffix = f" [{sem_lbl}]" if sem_lbl else ""
+                    if var: conn_str = f'    {src_id}["{safe_src}"] -- "{safe_var}{lbl_suffix}" --> {sink_id}["{safe_sink}"]\n'
                     else: conn_str = f'    {src_id}["{safe_src}"] --> {sink_id}["{safe_sink}"]\n'
                     if conn_str not in connections:
                         connections.add(conn_str)
                         f.write(conn_str)
                 f.write("```\n\n")
+
+            # Track A.4: Participating Symbols backlinks
+            participating = []
+            for s in states:
+                s_meta = meta.get(s, {})
+                s_kind = s_meta.get("kind")
+                if s_kind != "Synthesized" and not s.startswith("[") and not s.startswith("Redirect:"):
+                    participating.append((s, s_meta))
+            if participating:
+                f.write("## Participating Symbols\n\n")
+                for s, s_meta in participating:
+                    display_s = s.split(':')[-1]
+                    s_file = s_meta.get("file", "unknown")
+                    s_line = s_meta.get("line")
+                    line_suffix = f" (L{s_line})" if s_line else ""
+                    f.write(f"- [[symbols/{self._get_safe_filename(s)}\\|{display_s}]] in [[files/{self._get_safe_filename(s_file)}\\|{s_file}]]{line_suffix}\n")
+                f.write("\n")
+
+            # Detailed State Definitions for complete context
+            f.write("## Detailed State Definitions\n\n")
+            f.write("| State Alias | Full State Expression | Resolved Variables / Constants |\n")
+            f.write("| :--- | :--- | :--- |\n")
+            for s in states:
+                alias = state_aliases.get(s, s)
+                escaped_s = self._escape_for_table_no_truncation(s)
+                resolved = self._resolve_expression_variables(s, meta, states)
+                
+                resolved_parts = []
+                for var, info in sorted(resolved.items()):
+                    val_str = str(info["value"]).replace("\n", " ")
+                    src_str = f" ({info['source']})" if info.get("source") else ""
+                    resolved_parts.append(f"`{var}` = `{val_str}`{src_str}")
+                
+                resolved_str = " <br> ".join(resolved_parts) if resolved_parts else "—"
+                f.write(f"| `{alias}` | `{escaped_s}` | {resolved_str} |\n")
+            f.write("\n")
 
     def export_narrative(self, archetype: str, symbols: List[dict]):
         safe_arch = self._get_safe_filename(archetype)
@@ -824,17 +983,25 @@ class LibrarianEngine:
             f.write(f"This subsystem contains {len(symbols)} symbols with a collective mass of {total_mass:.2f}.\n\n")
             f.write(f"## Key Symbols\n")
             key_symbols = sorted(symbols, key=lambda x: x.get("mass", 0), reverse=True)[:10]
-            for s in key_symbols: f.write(f"- `[[{s['name']}]]` (Mass: {s.get('mass', 0):.2f}, PE: {s.get('potential_energy', 0):.2f})\n")
+            for s in key_symbols: f.write(f"- [[symbols/{self._get_safe_filename(s['name'])}\\|{s['name'].split(':')[-1]}]] (Mass: {s.get('mass', 0):.2f}, PE: {s.get('potential_energy', 0):.2f})\n")
             f.write(f"\n## Security Posture\n")
             tainted_count = sum(1 for s in symbols if any(isinstance(data, dict) and data.get("state") == "TAINTED" for data in s.get("variable_states", {}).values()))
             f.write(f"- **Tainted Symbols**: {tainted_count}\n")
             f.write(f"\n## Primary Dataflows\n")
-            f.write("| Source | Target | State |\n")
-            f.write("|:---|:---|:---|\n")
+            f.write("| Source | Target | State | Location |\n")
+            f.write("|:---|:---|:---|:---|\n")
             count = 0
             for s in symbols:
                 for path in s.get("flow_paths", []):
-                    f.write(f"| {path.get('source')} | {path.get('sink')} | {path.get('state')} |\n")
+                    file_path = path.get("file_path")
+                    line = path.get("line")
+                    if file_path:
+                        file_basename = os.path.basename(file_path)
+                        safe_file = self._get_safe_filename(file_path)
+                        loc_str = f"[[files/{safe_file}\\|{file_basename}]]:{line}" if line else f"[[files/{safe_file}\\|{file_basename}]]"
+                    else:
+                        loc_str = "—"
+                    f.write(f"| {path.get('source')} | {path.get('sink')} | {path.get('state')} | {loc_str} |\n")
                     count += 1
                     if count > 20: break
                 if count > 20: break
@@ -845,7 +1012,78 @@ class LibrarianEngine:
             f.write("# Docstring & Quality Invariants Warnings\n\n")
             f.write("| Symbol | File | Warnings |\n")
             f.write("|:---|:---|:---|\n")
-            for w in warnings: f.write(f"| [[{self._get_safe_filename(w['name'])}\\|{w['name'].split(':')[-1]}]] | {w['file']} | {', '.join(w['warnings'])} |\n")
+            for w in warnings: f.write(f"| [[symbols/{self._get_safe_filename(w['name'])}\\|{w['name'].split(':')[-1]}]] | {w['file']} | {', '.join(w['warnings'])} |\n")
+
+    def generate_and_export_privilege_map(self, funcs: List[dict], calls_map: dict):
+        """
+        Discovers privilege boundaries dynamically from the call graph.
+        Auth gates are any symbols whose name or body matches CREDENTIAL/AUTH_TOKEN
+        patterns AND have multiple inbound callers.
+        """
+        from brain.taint_classifier import TaintClassifier
+        metadata_dir = os.path.join(self.vault_path, ".qbrain")
+        classifier = TaintClassifier(metadata_dir, registry=self.registry)
+        
+        candidates = set()
+        for f in funcs:
+            name = f.get("name")
+            if not name:
+                continue
+            for var in f.get("variable_states", {}).keys():
+                label = classifier.classify(var)
+                if label in ("AUTH_TOKEN", "CREDENTIAL", "SESSION_ID", "TOKEN_FRAGMENT"):
+                    candidates.add(name)
+                    break
+        
+        gates = []
+        for sym in candidates:
+            callers = calls_map.get(sym, {}).get("callers", [])
+            if len(callers) >= 2:
+                gates.append({
+                    "symbol": sym,
+                    "callers": callers,
+                    "zone": "AUTHENTICATED",
+                    "gate_confidence": min(1.0, len(callers) / 10.0)
+                })
+        
+        auth_caller_set = {c for g in gates for c in g["callers"]}
+        all_syms = {f["name"] for f in funcs if f.get("name")}
+        privilege_map = {
+            "gates": gates,
+            "authenticated_zone": sorted(list(auth_caller_set)),
+            "public_zone": sorted(list(all_syms - auth_caller_set)),
+            "generated_at": datetime.datetime.utcnow().isoformat()
+        }
+        
+        rules_meta_dir = os.path.join(metadata_dir, "rules")
+        os.makedirs(rules_meta_dir, exist_ok=True)
+        with open(os.path.join(rules_meta_dir, "privilege_boundaries.json"), "w", encoding="utf-8") as f:
+            json.dump(privilege_map, f, indent=2, default=str)
+            
+        filepath = self._safe_path("rules", "privilege_boundaries.md")
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write("# Dynamic Privilege Boundaries & Auth Gates\n\n")
+            f.write("This document defines security zones and boundaries discovered dynamically from call graph relationships and credential flows.\n\n")
+            
+            f.write("## Discovered Auth Gates\n\n")
+            if not gates:
+                f.write("*No shared auth gates discovered (threshold >= 2 callers).*\n")
+            else:
+                f.write("| Auth Gate Symbol | Inbound Callers | Confidence |\n")
+                f.write("| :--- | :--- | :--- |\n")
+                for g in gates:
+                    short_sym = g["symbol"].split(":")[-1]
+                    f.write(f"| [[symbols/{self._get_safe_filename(g['symbol'])}\\|{short_sym}]] | {len(g['callers'])} | {g['gate_confidence'] * 100:.1f}% |\n")
+            f.write("\n")
+            
+            f.write("## Authenticated Zone (Callers of Auth Gates)\n\n")
+            if not auth_caller_set:
+                f.write("*No symbols in authenticated zone.*\n")
+            else:
+                for c in sorted(list(auth_caller_set)):
+                    short_c = c.split(":")[-1]
+                    f.write(f"- [[symbols/{self._get_safe_filename(c)}\\|{short_c}]]\n")
+            f.write("\n")
 
     def export_vulnerabilities(self, vulns: List[dict]):
         """
@@ -953,7 +1191,7 @@ class LibrarianEngine:
                     display_name = name.split(":")[-1]
                     file_path = v.get("file", "unknown")
                     desc = (v.get("description") or v.get("message") or "").replace("|", "\\|")
-                    f.write(f"| {icon} {sev} | [[{safe_link}\\|{display_name}]] | {file_path} | {desc} |\n")
+                    f.write(f"| {icon} {sev} | [[symbols/{safe_link}\\|{display_name}]] | {file_path} | {desc} |\n")
                 f.write("\n")
 
             # ── CWE Top 40 Coverage Matrix ────────────────────────────────────
@@ -1024,11 +1262,11 @@ class LibrarianEngine:
             f.write("## 🏋️ Complexity Hotspots (Highest Mass)\n")
             f.write("| Symbol | File | Mass | Archetype |\n")
             f.write("|:---|:---|:---|:---|\n")
-            for h in hotspots.get("complexity", []): f.write(f"| [[{self._get_safe_filename(h['name'])}\\|{h['name'].split(':')[-1]}]] | {h.get('file', 'unknown')} | {h['mass']:.1f} | {h.get('archetype', '—')} |\n")
+            for h in hotspots.get("complexity", []): f.write(f"| [[symbols/{self._get_safe_filename(h['name'])}\\|{h['name'].split(':')[-1]}]] | {h.get('file', 'unknown')} | {h['mass']:.1f} | {h.get('archetype', '—')} |\n")
             f.write("\n## ⚡ Attention Hotspots (Highest Drift / Attention Debt)\n")
             f.write("| Symbol | File | Potential Energy | Archetype |\n")
             f.write("|:---|:---|:---|:---|\n")
-            for h in hotspots.get("attention", []): f.write(f"| [[{self._get_safe_filename(h['name'])}\\|{h['name'].split(':')[-1]}]] | {h.get('file', 'unknown')} | {h['potential_energy']:.2f} | {h.get('archetype', '—')} |\n")
+            for h in hotspots.get("attention", []): f.write(f"| [[symbols/{self._get_safe_filename(h['name'])}\\|{h['name'].split(':')[-1]}]] | {h.get('file', 'unknown')} | {h['potential_energy']:.2f} | {h.get('archetype', '—')} |\n")
 
     def export_archetypes(self, groups: dict):
         filepath = self._safe_path("rules", "archetypes.md")
@@ -1037,10 +1275,10 @@ class LibrarianEngine:
             for arch, symbols in groups.items():
                 title_arch = "-".join([w.capitalize() for w in arch.split("-")])
                 safe_arch = self._get_safe_filename(arch)
-                f.write(f"## {title_arch} (Narrative: [[archetype_{safe_arch}]])\n")
+                f.write(f"## {title_arch} (Narrative: [[narratives/archetype_{safe_arch}]])\n")
                 for s in symbols[:15]:
                     conf_str = f" (Confidence: {s['confidence']:.2%})" if "confidence" in s else ""
-                    f.write(f"- [[{self._get_safe_filename(s['name'])}\\|{s['name'].split(':')[-1]}]] {conf_str}\n")
+                    f.write(f"- [[symbols/{self._get_safe_filename(s['name'])}\\|{s['name'].split(':')[-1]}]] {conf_str}\n")
                 f.write("\n")
 
     def export_branch_diff(self, diff: dict):
@@ -1052,4 +1290,6 @@ class LibrarianEngine:
             f.write("## 📝 Modified Files & Relevance Scores\n")
             f.write("| File | Status | Churn | Relevance |\n")
             f.write("|:---|:---|:---|:---|\n")
-            for fl in diff.get("files", []): f.write(f"| {fl['file']} | {fl.get('status')} | {fl.get('churn')} | {fl.get('relevance_score')} |\n")
+            for fl in diff.get("files", []):
+                safe_file = self._get_safe_filename(fl['file'])
+                f.write(f"| [[files/{safe_file}\\|{fl['file']}]] | {fl.get('status')} | {fl.get('churn')} | {fl.get('relevance_score')} |\n")

@@ -61,26 +61,27 @@ def init_project(repo_path: str, vault_path: str, console) -> None:
         except Exception as e:
             console.print(f"[yellow]Warning: Could not initialize Git repository: {e}[/yellow]")
             
-        rules_file = os.path.join(abs_repo, ".qbrain-rules.yaml")
-        if not os.path.exists(rules_file):
-            default_rules = {
-                "history": {
-                    "keep_threshold": 10,
-                    "weights": {
-                        "symbol_change": 3,
-                        "behavior_change": 5,
-                        "security_change": 10,
-                        "error_change": 6
-                    },
-                    "ignore": ["*.md", "package-lock.json"]
-                }
+    os.makedirs(config.metadata_dir, exist_ok=True)
+    rules_file = os.path.join(config.metadata_dir, ".qbrain-rules.yaml")
+    if not os.path.exists(rules_file):
+        default_rules = {
+            "history": {
+                "keep_threshold": 10,
+                "weights": {
+                    "symbol_change": 3,
+                    "behavior_change": 5,
+                    "security_change": 10,
+                    "error_change": 6
+                },
+                "ignore": ["*.md", "package-lock.json"]
             }
-            try:
-                with open(rules_file, "w", encoding="utf-8") as f:
-                    yaml.dump(default_rules, f, default_flow_style=False)
-                console.print(f"[green]Created default configuration template at {rules_file}[/green]")
-            except Exception as e:
-                console.print(f"[yellow]Warning: Could not create default rules template: {e}[/yellow]")
+        }
+        try:
+            with open(rules_file, "w", encoding="utf-8") as f:
+                yaml.dump(default_rules, f, default_flow_style=False)
+            console.print(f"[green]Created default configuration template at {rules_file}[/green]")
+        except Exception as e:
+            console.print(f"[yellow]Warning: Could not create default rules template: {e}[/yellow]")
 
     # 4. Trigger codebase-memory-mcp index_repository
     console.print("Indexing project via codebase-memory-mcp...")

@@ -61,6 +61,7 @@ def sync_library(config, indexer, console):
             # 2. Environmental Pre-Scan (Bootstrap & Global Constants)
             console.print("Executing environmental pre-scan...")
             registry = GlobalRegistry()
+            engine.registry = registry
             setup_patterns = [r"config.*\.php$", r"bootstrap.*\.php$", r"common\.php$", r"\.env$", r"settings\.php$", r"init\.php$"]
             setup_files = []
             for root, _, files in os.walk(repo_path):
@@ -358,6 +359,34 @@ def sync_library(config, indexer, console):
                     behaviors.append(model)
                     processed_behaviors.add(ep_path)
                 else:
+                    # Track B.2.2: Branch merging for high-arity switch statements
+                    max_behaviors = config.data.get("rules", {}).get("behavior_model", {}).get("max_behaviors_per_entrypoint", 8)
+                    if len(scenarios) > max_behaviors:
+                        from brain.taint_classifier import TaintClassifier
+                        metadata_dir = os.path.join(vault_path, ".qbrain")
+                        classifier = TaintClassifier(metadata_dir, registry=registry)
+                        important = []
+                        others = []
+                        for scene in scenarios:
+                            is_important = False
+                            for cond in scene["constraints"]:
+                                m = re.search(r"([\$\w]+)", cond)
+                                if m:
+                                    var = m.group(1)
+                                    lbl = classifier.classify(var)
+                                    if lbl in ("PRIVILEGE_LABEL", "AUTH_TOKEN", "SESSION_ID", "USER_ID"):
+                                        is_important = True
+                                        break
+                            if is_important:
+                                important.append(scene)
+                            else:
+                                others.append(scene)
+                        
+                        if len(important) < max_behaviors:
+                            scenarios = important + others[:max_behaviors - len(important)]
+                        else:
+                            scenarios = important[:max_behaviors]
+
                     for scene in scenarios:
                         constraints = scene["constraints"]
                         scene_label = "_".join(constraints)
@@ -455,6 +484,12 @@ def sync_library(config, indexer, console):
                 arch_groups.setdefault(v["archetype"], []).append({"name": k, "mass": v["mass"], "potential_energy": v["potential_energy"], "variable_states": next((f.get("variable_states", {}) for f in funcs if f.get("name") == k), {}), "flow_paths": next((f.get("flow_paths", []) for f in funcs if f.get("name") == k), []), "confidence": 0.95})
             engine.export_archetypes(arch_groups)
             for arch, syms in arch_groups.items(): engine.export_narrative(arch, syms)
+
+            # Export privilege map
+            try:
+                engine.generate_and_export_privilege_map(funcs, calls_map)
+            except Exception as e:
+                console.print(f"[yellow]Warning: privilege boundaries mapping failed: {e}[/yellow]")
 
             for model in behaviors:
                 engine.export_behavior(model)

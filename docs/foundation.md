@@ -47,7 +47,7 @@ To support writable state discovery (which the primary memory graph currently re
 
 - **Class**: `PersistenceManager`
 - **Data Stores**:
-  - **Internal Mind (SQLite)**: Stores writable internal beliefs, physics scores (mass, PE), security entanglements, and dataflow results. This database is named `.qbrain-mind-<project-slug>.sqlite` and resides in the target repository root.
+  - **Internal Mind (SQLite)**: Stores writable internal beliefs, physics scores (mass, PE), security entanglements, and dataflow results. This database is named `qbrain-mind-<project-slug>.sqlite` and resides in the `<vault_path>/.qbrain/` metadata directory.
   - **External World (Graph)**: Acts as the primary read-only structural representation provided by `codebase-memory-mcp`.
 - **Merging Logic**: During `library sync`, the Librarian automatically merges data from both sources, prioritizing the "Mind" for internal state and the "Graph" for structural definitions.
 

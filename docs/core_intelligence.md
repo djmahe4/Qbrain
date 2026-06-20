@@ -90,7 +90,18 @@ Analyzes code snippets to track variable lifecycles, states, and dataflow paths.
   - **Path Mapping**: Builds Mermaid-compatible dataflow paths from sources to sinks.
 
 
-## 9. Vulnerability Scanner (`brain/vuln_scanner.py`)
+## 9. Dynamic Taint Classifier (`brain/taint_classifier.py`)
+
+Dynamically classifies variable taints into semantic labels like `USER_ID`, `CREDENTIAL`, `AUTH_TOKEN`, etc.
+
+- **Class**: `TaintClassifier`
+- **Responsibilities**:
+  - Reading user-defined regex pattern labels from `<vault_path>/.qbrain/.qbrain-taint-labels.yaml`.
+  - Integrating `GlobalRegistry` constants to identify safe values.
+  - Employing name-based pattern matching (e.g. `passwd`, `token`, `role`) as fallbacks.
+  - Classifying flows to construct clean, human-readable dataflow models.
+
+## 10. Vulnerability Scanner (`brain/vuln_scanner.py`)
 
 Runs unified security audits across codebase symbols and tracks vulnerabilities mapped to CWE designations.
 

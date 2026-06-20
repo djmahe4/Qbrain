@@ -10,7 +10,12 @@
 * **Semantic Vector Search**: Local vector search over extracted docstrings utilizing `sentence-transformers` for cosine similarity matching.
 * **N-Body Gravity Simulation**: Simulates codebase connectivity where tightly coupled or entangled symbols experience gravitational attraction, and disparate systems repel.
 * **Unified CWE Vulnerability Audit**: Scans codebases for CWE Top 40 vulnerabilities (Missing/Incorrect Authorization, Sensitive Log Exposures, Hardcoded Credentials, Resource Exhaustion, Taint-to-Sink flow checks for XSS/SQLi/Command Injection).
-* **Obsidian Vault Syncer**: Generates Obsidian markdown pages containing symbol definitions, behavior flows (rendered via safe-escaped Mermaid state diagrams), dynamic variable tracking tables, and dataflow graphs.
+* **Obsidian Vault Syncer**: Generates Obsidian markdown pages containing symbol definitions, behavior flows (rendered via safe-escaped Mermaid state diagrams), dynamic variable tracking tables, dataflow graphs, and participating symbols backlinks.
+* **Consolidated Metadata Storage**: Stores all generated artifacts (SQLite database, rules, and evidence logs) in a dedicated `<vault_path>/.qbrain/` subdirectory to avoid cluttering the repository.
+* **Dynamic Semantic Taint Classification**: Employs a `TaintClassifier` to classify variables (e.g. `USER_ID`, `CREDENTIAL`) using user-defined labels in `.qbrain-taint-labels.yaml`, `GlobalRegistry` constants, and regex pattern heuristics.
+* **Behavior JSON Sidecars**: Exports clean, machine-parseable state machine specifications to `behaviors/_json/` sidecar documents.
+* **Privilege Boundary Discovery**: Maps auth boundaries and shared gates dynamically based on caller metrics and variable classifications, generating `rules/privilege_boundaries.json`.
+* **State Pruning & Merging**: Automatically prunes synthesized HTML redirectors and merges high-arity branch scenarios based on parameter relevance.
 * **PID-Locking & Watching**: Safe background watchers and sync operations prevented from colliding via atomic lock protection.
 
 ---

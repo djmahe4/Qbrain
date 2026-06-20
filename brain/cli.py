@@ -57,7 +57,8 @@ def get_engine(repo_path: Optional[str] = None):
 
 def get_cognitive_engine(repo_path: Optional[str] = None):
     config, indexer, embedder, scorer = get_engine(repo_path)
-    store = EvidenceStore(".qbrain-evidence.jsonl")
+    os.makedirs(config.metadata_dir, exist_ok=True)
+    store = EvidenceStore(os.path.join(config.metadata_dir, "qbrain-evidence.jsonl"))
     cem = CEMEngine()
     san = SANEngine()
     cognitive = CognitiveLayer()

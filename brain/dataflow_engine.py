@@ -74,6 +74,7 @@ class DataFlowEngine:
         # 2. Process Atoms
         constraint_stack = [] # List of strings
         last_cond_stack = []
+        brace_pushed_constraint = []
         active_switch_cond = None
         
         for atom in raw_atoms:
@@ -139,13 +140,25 @@ class DataFlowEngine:
                 if val == "{":
                     if last_cond_stack:
                         constraint_stack.append(last_cond_stack.pop())
+                        brace_pushed_constraint.append(True)
+                    else:
+                        brace_pushed_constraint.append(False)
                 elif val == "}":
-                    if constraint_stack: 
-                        popped = constraint_stack.pop()
-                        if popped == active_switch_cond or (active_switch_cond and popped.startswith(f"{active_switch_cond} == ")):
-                            if popped.startswith(f"{active_switch_cond} == ") and constraint_stack and constraint_stack[-1] == active_switch_cond:
-                                constraint_stack.pop()
-                            active_switch_cond = None
+                    if brace_pushed_constraint:
+                        pushed_constraint = brace_pushed_constraint.pop()
+                        if pushed_constraint and constraint_stack:
+                            popped = constraint_stack.pop()
+                            if active_switch_cond and (popped == active_switch_cond or popped.startswith(f"{active_switch_cond} == ")):
+                                if popped.startswith(f"{active_switch_cond} == ") and constraint_stack and constraint_stack[-1] == active_switch_cond:
+                                    constraint_stack.pop()
+                                active_switch_cond = None
+                    else:
+                        if constraint_stack:
+                            popped = constraint_stack.pop()
+                            if active_switch_cond and (popped == active_switch_cond or popped.startswith(f"{active_switch_cond} == ")):
+                                if popped.startswith(f"{active_switch_cond} == ") and constraint_stack and constraint_stack[-1] == active_switch_cond:
+                                    constraint_stack.pop()
+                                active_switch_cond = None
                 elif val in ("break", "return"):
                     # Interrupt clears the current branch constraints for choices following it
                     last_cond_stack.clear()

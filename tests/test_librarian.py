@@ -117,7 +117,7 @@ def test_librarian_exports_warnings(tmp_path):
         content = f.read()
 
     assert "# Docstring & Quality Invariants Warnings" in content
-    assert "badFunc|badFunc" in content
+    assert "badFunc\\|badFunc" in content
     assert "mismatchedFunc" in content
     assert "signature parameters are not documented" in content
 
@@ -213,8 +213,8 @@ def test_librarian_exports_behavior_with_dataflow_and_variables(tmp_path):
 
     # Verify Dynamic Variable Tracking section is present
     assert "## Dynamic Variable Tracking" in content
-    assert "| `$var1` | `TAINTED` | string | not null |" in content
-    assert "| `$var2` | `SAFE` | int | — |" in content
+    assert "| `$var1` | `GENERIC_TAINT` | `TAINTED` |" in content
+    assert "| `$var2` | `GENERIC_TAINT` | `SAFE` |" in content
 
     # Verify Behavior Dataflow Tracking section is present
     assert "## Behavior Dataflow Tracking" in content

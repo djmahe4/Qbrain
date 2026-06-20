@@ -20,7 +20,12 @@ class Indexer:
         
         # Initialize dual-persistence manager
         p_name = self._get_project_name()
-        db_path = os.path.join(config.repo_path, f".qbrain-mind-{p_name}.sqlite")
+        metadata_dir = getattr(config, "metadata_dir", None)
+        if not metadata_dir:
+            vault_path = getattr(config, "vault_path", os.path.join(config.repo_path, "obsidian_vault"))
+            metadata_dir = os.path.abspath(os.path.join(vault_path, ".qbrain"))
+        os.makedirs(metadata_dir, exist_ok=True)
+        db_path = os.path.join(metadata_dir, f"qbrain-mind-{p_name}.sqlite")
         self.persistence = PersistenceManager(db_path, self)
 
 
