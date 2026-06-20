@@ -218,7 +218,10 @@ class VulnerabilityScanner:
                     file_path = func.get("file") or "unknown"
                 
                 for sink_kw, (cwe, desc) in sorted_sinks:
-                    if sink_kw in sink:
+                    # Match sink keyword as a whole word boundary to prevent false positives
+                    # like matching 'header' inside '$headercells' or 'open' inside '$openerlength'.
+                    pattern = rf"\b{re.escape(sink_kw)}\b"
+                    if re.search(pattern, sink, re.IGNORECASE):
                         dedup_key = (file_path, line, var, cwe)
                         if dedup_key in seen:
                             break

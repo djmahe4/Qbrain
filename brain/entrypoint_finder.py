@@ -199,8 +199,39 @@ class EntrypointFinder:
                                 "name": f.split(".")[0]
                             })
 
+        # 6. Add setup and configuration files as entrypoints
+        for fpath in self.find_setup_config_files():
+            rel_path = os.path.relpath(fpath, self.repo_path).replace("\\", "/")
+            if rel_path not in [e["file"] for e in entrypoints]:
+                entrypoints.append({
+                    "type": "setup_config",
+                    "file": rel_path,
+                    "name": os.path.basename(fpath).split(".")[0]
+                })
+
         # Normalize slashes
         for e in entrypoints:
             e["file"] = e["file"].replace("\\", "/")
 
         return entrypoints
+
+    def find_setup_config_files(self) -> List[str]:
+        """Scans for database setup and configuration files, including .dist templates."""
+        setup_patterns = [
+            r"config.*\.php(\.dist)?$", 
+            r"bootstrap.*\.php(\.dist)?$", 
+            r"common\.php(\.dist)?$", 
+            r"\.env(\.dist)?$", 
+            r"settings\.php(\.dist)?$", 
+            r"init\.php(\.dist)?$",
+            r"setup.*\.php(\.dist)?$"
+        ]
+        found_files = []
+        if os.path.exists(self.repo_path) and os.path.isdir(self.repo_path):
+            for root, dirs, files in os.walk(self.repo_path):
+                # Prune common search dirs
+                dirs[:] = [d for d in dirs if d not in ("obsidian_vault", ".git", "node_modules", "vendor", ".venv", "venv", "__pycache__", "build", "dist")]
+                for f in files:
+                    if any(re.match(pattern, f, re.IGNORECASE) for pattern in setup_patterns):
+                        found_files.append(os.path.join(root, f))
+        return found_files

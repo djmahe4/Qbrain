@@ -62,22 +62,17 @@ def sync_library(config, indexer, console):
             console.print("Executing environmental pre-scan...")
             registry = GlobalRegistry()
             engine.registry = registry
-            setup_patterns = [r"config.*\.php$", r"bootstrap.*\.php$", r"common\.php$", r"\.env$", r"settings\.php$", r"init\.php$"]
-            setup_files = []
-            for root, _, files in os.walk(repo_path):
-                if any(x in root for x in ["obsidian_vault", ".git", "node_modules", "vendor"]): continue
-                for file in files:
-                    if any(re.match(pattern, file, re.IGNORECASE) for pattern in setup_patterns):
-                        setup_files.append(os.path.join(root, file))
+            finder = EntrypointFinder(repo_path)
+            setup_files = finder.find_setup_config_files()
             
             for setup_file in setup_files:
                 try:
                     with open(setup_file, "r", errors="ignore") as f: content = f.read()
                     rel_path = os.path.relpath(setup_file, repo_path)
-                    if setup_file.lower().endswith(".php"):
+                    if setup_file.lower().endswith((".php", ".php.dist")):
                         for name, value in php_parser.extract_globals(content).items():
                             registry.register_constant(name, value, origin=rel_path)
-                    elif setup_file.lower().endswith(".env"):
+                    elif setup_file.lower().endswith((".env", ".env.dist")):
                         for line in content.splitlines():
                             line = line.strip()
                             if line and not line.startswith("#") and "=" in line:
@@ -473,6 +468,7 @@ def sync_library(config, indexer, console):
                 })
 
             engine.export_warnings(all_warnings)
+            engine.export_prerequisites(setup_files, registry)
             engine.export_vulnerabilities(vulnerabilities)
             engine.export_hotspots({
                 "complexity": sorted([{"name": k, "mass": v["mass"], "archetype": v["archetype"], "file": v.get("file", "unknown")} for k, v in cognitive_info.items()], key=lambda x: x["mass"], reverse=True)[:10],
@@ -481,7 +477,15 @@ def sync_library(config, indexer, console):
             
             arch_groups = {}
             for k, v in cognitive_info.items():
-                arch_groups.setdefault(v["archetype"], []).append({"name": k, "mass": v["mass"], "potential_energy": v["potential_energy"], "variable_states": next((f.get("variable_states", {}) for f in funcs if f.get("name") == k), {}), "flow_paths": next((f.get("flow_paths", []) for f in funcs if f.get("name") == k), []), "confidence": 0.95})
+                arch_groups.setdefault(v["archetype"], []).append({
+                    "name": k,
+                    "mass": v["mass"],
+                    "potential_energy": v["potential_energy"],
+                    "variable_states": next((f.get("variable_states", {}) for f in funcs if f.get("name") == k), {}),
+                    "flow_paths": next((f.get("flow_paths", []) for f in funcs if f.get("name") == k), []),
+                    "behaviors": symbol_to_behaviors.get(k, []),
+                    "confidence": 0.95
+                })
             engine.export_archetypes(arch_groups)
             for arch, syms in arch_groups.items(): engine.export_narrative(arch, syms)
 

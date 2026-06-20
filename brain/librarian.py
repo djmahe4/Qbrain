@@ -616,6 +616,25 @@ class LibrarianEngine:
                 })
                 states.add(current)
             
+            # Prune/ignore setup and config calls from other entrypoints
+            is_setup_config = False
+            symbol_file = sym_meta.get(lookup_key, {}).get("file") or (lookup_key if lookup_key.endswith(".php") or lookup_key.endswith(".php.dist") else None)
+            if symbol_file and entrypoint_path != symbol_file:
+                setup_patterns = [
+                    r"config.*\.php(\.dist)?$", 
+                    r"bootstrap.*\.php(\.dist)?$", 
+                    r"common\.php(\.dist)?$", 
+                    r"settings\.php(\.dist)?$", 
+                    r"init\.php(\.dist)?$",
+                    r"setup.*\.php(\.dist)?$"
+                ]
+                file_name = os.path.basename(symbol_file)
+                if any(re.match(pattern, file_name, re.IGNORECASE) for pattern in setup_patterns):
+                    is_setup_config = True
+            
+            if is_setup_config:
+                continue
+
             if depth < max_depth:
                 if lookup_key not in visited:
                     visited.add(lookup_key)
@@ -984,6 +1003,19 @@ class LibrarianEngine:
             f.write(f"## Key Symbols\n")
             key_symbols = sorted(symbols, key=lambda x: x.get("mass", 0), reverse=True)[:10]
             for s in key_symbols: f.write(f"- [[symbols/{self._get_safe_filename(s['name'])}\\|{s['name'].split(':')[-1]}]] (Mass: {s.get('mass', 0):.2f}, PE: {s.get('potential_energy', 0):.2f})\n")
+            
+            # Collect unique behaviors associated with this archetype
+            all_behaviors = set()
+            for s in symbols:
+                for b in s.get("behaviors", []):
+                    all_behaviors.add(b)
+            
+            if all_behaviors:
+                f.write(f"\n## Associated Behaviors\n")
+                for b in sorted(list(all_behaviors)):
+                    display_b = b.replace("_", "/").replace(".php", "")
+                    f.write(f"- [[behaviors/{b}\\|{display_b}]]\n")
+            
             f.write(f"\n## Security Posture\n")
             tainted_count = sum(1 for s in symbols if any(isinstance(data, dict) and data.get("state") == "TAINTED" for data in s.get("variable_states", {}).values()))
             f.write(f"- **Tainted Symbols**: {tainted_count}\n")
@@ -1013,6 +1045,64 @@ class LibrarianEngine:
             f.write("| Symbol | File | Warnings |\n")
             f.write("|:---|:---|:---|\n")
             for w in warnings: f.write(f"| [[symbols/{self._get_safe_filename(w['name'])}\\|{w['name'].split(':')[-1]}]] | {w['file']} | {', '.join(w['warnings'])} |\n")
+
+    def export_prerequisites(self, setup_files: List[str], registry):
+        """Generates a centralized prerequisites.md to document bootstrapping requirements."""
+        filepath = self._safe_path("rules", "prerequisites.md")
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write("# 📋 System Prerequisites & Bootstrapping\n\n")
+            f.write("This centralized document lists all environmental configuration requirements, database setup scripts, and third-party prerequisites needed for the application to function correctly.\n\n")
+            
+            f.write("## 1. Discovered Setup & Installer Scripts\n\n")
+            if not setup_files:
+                f.write("*No setup or configuration files were detected during scanning.*\n")
+            else:
+                f.write("These files contain database schema definitions, installation guides, or configuration routines:\n\n")
+                for sf in sorted(setup_files):
+                    rel_sf = os.path.relpath(sf, self.repo_path).replace("\\", "/")
+                    safe_sf = self._get_safe_filename(rel_sf)
+                    f.write(f"- **File**: [[files/{safe_sf}\\|{rel_sf}]]\n")
+                    f.write(f"  - **Behavior Model**: [[behaviors/{safe_sf}\\|View behavior model]]\n")
+            f.write("\n")
+            
+            f.write("## 2. Configuration Settings & Global Constants\n\n")
+            if not registry.constants:
+                f.write("*No global configuration constants were extracted during environmental pre-scan.*\n")
+            else:
+                f.write("The following global variables, configurations, or credentials were discovered in the setup files:\n\n")
+                f.write("| Key | Value / Placeholder | Origin File |\n")
+                f.write("| :--- | :--- | :--- |\n")
+                for name, value in sorted(registry.constants.items()):
+                    origin = registry.get_origin(name) or "unknown"
+                    safe_origin = self._get_safe_filename(origin)
+                    is_secret = any(s in name.lower() for s in ["pass", "secret", "key", "token"])
+                    masked_val = "********" if is_secret and value else str(value)
+                    f.write(f"| `{name}` | `{masked_val}` | [[files/{safe_origin}\\|{origin}]] |\n")
+            f.write("\n")
+            
+            f.write("## 3. Third-Party Dependencies & Features\n\n")
+            vendor_dir = os.path.join(self.repo_path, "vendor")
+            node_modules_dir = os.path.join(self.repo_path, "node_modules")
+            composer_json = os.path.join(self.repo_path, "composer.json")
+            package_json = os.path.join(self.repo_path, "package.json")
+            
+            if os.path.exists(composer_json):
+                f.write("- **Composer Package Manager (PHP)**: `composer.json` detected.\n")
+                if not os.path.exists(vendor_dir):
+                    f.write("  - ⚠️ `vendor/` directory is **Missing**. Run `composer install` to install PHP dependencies.\n")
+                else:
+                    f.write("  - 🟢 `vendor/` directory is **Installed**.\n")
+            if os.path.exists(package_json):
+                f.write("- **Node Package Manager (JS/TS)**: `package.json` detected.\n")
+                if not os.path.exists(node_modules_dir):
+                    f.write("  - ⚠️ `node_modules/` directory is **Missing**. Run `npm install` to install JS/TS dependencies.\n")
+                else:
+                    f.write("  - 🟢 `node_modules/` directory is **Installed**.\n")
+            
+            recaptcha_constants = [c for c in registry.constants if "recaptcha" in c.lower()]
+            if recaptcha_constants:
+                f.write("\n## 4. Specific Feature Prerequisites\n\n")
+                f.write("- **Google reCAPTCHA**: Setup requires API keys to be configured in the config file. Found variables: " + ", ".join(f"`{c}`" for c in recaptcha_constants) + ".\n")
 
     def generate_and_export_privilege_map(self, funcs: List[dict], calls_map: dict):
         """
