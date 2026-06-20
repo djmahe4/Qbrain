@@ -327,6 +327,61 @@ def sync_library(config, indexer, console):
             # 8. Export
             console.print("Exporting enriched vault...")
             all_warnings, file_symbols_data = [], {}
+
+            sym_meta = {f["name"]: {
+                "file": f.get("file"),
+                "line": int(f.get("line")) if f.get("line") is not None else None,
+                "kind": next((k for k in ["Class", "Interface", "Enum", "Variable", "Method", "Function", "Module"] if k in f.get("labels", [])), "Function"),
+                "params": f.get("params", []),
+                "returns": f.get("returns", {}),
+                "docstring": f.get("docstring") or "",
+                "potential_energy": cognitive_info.get(f["name"], {}).get("potential_energy", 0.0),
+                "archetype": cognitive_info.get(f["name"], {}).get("archetype", "generic"),
+                "variable_states": f.get("variable_states", {}),
+                "flow_paths": f.get("flow_paths", [])
+            } for f in funcs}
+
+            # 9. Scenarios - run behavior models first to extract links
+            behaviors = []
+            symbol_to_behaviors = {}
+            file_to_behaviors = {}
+            processed_behaviors = set()
+            finder = EntrypointFinder(repo_path)
+            for ep in finder.find_entrypoints():
+                ep_path = ep.get("file", "")
+                ep_func = short_to_qualified.get(ep_path) or next((f.get("name") for f in funcs if f.get("file") == ep_path), ep.get("name", "main"))
+                scenarios = scenario_implementations.get(ep_path, [])
+                if not scenarios:
+                    if ep_path in processed_behaviors: continue
+                    model = engine.generate_behavior_model(ep_func, ep_path, calls_map, funcs, sym_meta, max_depth=config.data.get("behavior_max_depth", 10), max_states=config.data.get("behavior_max_states", 50))
+                    model["name"] = engine._get_safe_filename(ep_path)
+                    behaviors.append(model)
+                    processed_behaviors.add(ep_path)
+                else:
+                    for scene in scenarios:
+                        constraints = scene["constraints"]
+                        scene_label = "_".join(constraints)
+                        # Clean up label for filename (e.g. Low_Low instead of == 'low')
+                        scene_label = re.sub(r"==\s*['\"]?(\w+)['\"]?", r"\1", scene_label).capitalize()
+                        if scene_label == "Default": scene_label = "Impossible"
+                        parts = ep_path.split("/")
+                        prefix = parts[-3].replace("-", "_").capitalize() if (len(parts) >= 3 and parts[-2] == "source") else os.path.basename(os.path.dirname(ep_path)).replace("-", "_").capitalize()
+                        f_base = os.path.splitext(os.path.basename(ep_path))[0].capitalize()
+                        behavior_id = f"{prefix}_{f_base}_{scene_label}"
+                        if behavior_id in processed_behaviors: continue
+                        model = engine.generate_behavior_model(ep_func, ep_path, calls_map, funcs, sym_meta, scenario_constraints=constraints, max_depth=config.data.get("behavior_max_depth", 10), max_states=config.data.get("behavior_max_states", 50))
+                        model["name"], model["scenario_context"] = behavior_id, constraints
+                        behaviors.append(model)
+                        processed_behaviors.add(behavior_id)
+
+            for model in behaviors:
+                b_name = model["name"]
+                for s in model["states"]:
+                    symbol_to_behaviors.setdefault(s, []).append(b_name)
+                    s_file = sym_meta.get(s, {}).get("file")
+                    if s_file:
+                        file_to_behaviors.setdefault(s_file, []).append(b_name)
+
             for f in funcs:
                 name, f_path = f.get("name"), f.get("file")
                 parsed = parser.parse_genome(f)
@@ -344,7 +399,8 @@ def sync_library(config, indexer, console):
                     "vulnerabilities": [v for v in vulnerabilities if str(v.get("function")).strip() == str(name).strip()],
                     "line": int(f.get("line")) if f.get("line") is not None else None,
                     "line_range": [int(f.get("line")), int(f.get("end_line"))] if (f.get("line") is not None and f.get("end_line") is not None) else None,
-                    "variable_states": f.get("variable_states", {}), "flow_paths": f.get("flow_paths", [])
+                    "variable_states": f.get("variable_states", {}), "flow_paths": f.get("flow_paths", []),
+                    "behaviors": symbol_to_behaviors.get(name, [])
                 }
                 if symbol_kind != "Module":
                     engine.export_symbol(symbol_data)
@@ -367,7 +423,25 @@ def sync_library(config, indexer, console):
                     except Exception: pass
                 f_var_states = {}
                 for fn in file_funcs: f_var_states.update(fn.get("variable_states", {}))
-                engine.export_file({"file_path": f_path, "language": file_funcs[0].get("language") or "generic", "lines_of_code": loc, "size_bytes": sz, "symbols": [fn.get("name") for fn in file_funcs if fn.get("name")], "symbols_data": file_symbols_data.get(f_path, []), "variable_states": f_var_states})
+                
+                # Compute cognitive details for the file
+                file_mass = sum(cognitive_info.get(fn.get("name"), {}).get("mass", 1.0) for fn in file_funcs)
+                file_pe = sum(cognitive_info.get(fn.get("name"), {}).get("potential_energy", 0.0) for fn in file_funcs) / len(file_funcs) if file_funcs else 0.0
+                file_archetypes = list(set(cognitive_info.get(fn.get("name"), {}).get("archetype", "generic") for fn in file_funcs))
+
+                engine.export_file({
+                    "file_path": f_path, 
+                    "language": file_funcs[0].get("language") or "generic", 
+                    "lines_of_code": loc, 
+                    "size_bytes": sz, 
+                    "symbols": [fn.get("name") for fn in file_funcs if fn.get("name")], 
+                    "symbols_data": file_symbols_data.get(f_path, []), 
+                    "variable_states": f_var_states,
+                    "cognitive_mass": file_mass,
+                    "potential_energy": file_pe,
+                    "archetypes": file_archetypes,
+                    "behaviors": file_to_behaviors.get(f_path, [])
+                })
 
             engine.export_warnings(all_warnings)
             engine.export_vulnerabilities(vulnerabilities)
@@ -382,38 +456,8 @@ def sync_library(config, indexer, console):
             engine.export_archetypes(arch_groups)
             for arch, syms in arch_groups.items(): engine.export_narrative(arch, syms)
 
-            sym_meta = {f["name"]: {"params": f.get("params", []), "returns": f.get("returns", {}), "docstring": f.get("docstring") or "", "potential_energy": cognitive_info.get(f["name"], {}).get("potential_energy", 0.0), "archetype": cognitive_info.get(f["name"], {}).get("archetype", "generic"), "variable_states": f.get("variable_states", {}), "flow_paths": f.get("flow_paths", [])} for f in funcs}
-
-            # 9. Scenarios
-            processed_behaviors = set()
-            finder = EntrypointFinder(repo_path)
-            for ep in finder.find_entrypoints():
-                ep_path = ep.get("file", "")
-                print(f"DEBUG: Processing entrypoint: {ep_path}")
-                ep_func = short_to_qualified.get(ep_path) or next((f.get("name") for f in funcs if f.get("file") == ep_path), ep.get("name", "main"))
-                scenarios = scenario_implementations.get(ep_path, [])
-                if not scenarios:
-                    if ep_path in processed_behaviors: continue
-                    model = engine.generate_behavior_model(ep_func, ep_path, calls_map, funcs, sym_meta, max_depth=config.data.get("behavior_max_depth", 10), max_states=config.data.get("behavior_max_states", 50))
-                    model["name"] = engine._get_safe_filename(ep_path)
-                    engine.export_behavior(model)
-                    processed_behaviors.add(ep_path)
-                else:
-                    for scene in scenarios:
-                        constraints = scene["constraints"]
-                        scene_label = "_".join(constraints)
-                        # Clean up label for filename (e.g. Low_Low instead of == 'low')
-                        scene_label = re.sub(r"==\s*['\"]?(\w+)['\"]?", r"\1", scene_label).capitalize()
-                        if scene_label == "Default": scene_label = "Impossible"
-                        parts = ep_path.split("/")
-                        prefix = parts[-3].replace("-", "_").capitalize() if (len(parts) >= 3 and parts[-2] == "source") else os.path.basename(os.path.dirname(ep_path)).replace("-", "_").capitalize()
-                        f_base = os.path.splitext(os.path.basename(ep_path))[0].capitalize()
-                        behavior_id = f"{prefix}_{f_base}_{scene_label}"
-                        if behavior_id in processed_behaviors: continue
-                        model = engine.generate_behavior_model(ep_func, ep_path, calls_map, funcs, sym_meta, scenario_constraints=constraints, max_depth=config.data.get("behavior_max_depth", 10), max_states=config.data.get("behavior_max_states", 50))
-                        model["name"], model["scenario_context"] = behavior_id, constraints
-                        engine.export_behavior(model)
-                        processed_behaviors.add(behavior_id)
+            for model in behaviors:
+                engine.export_behavior(model)
             try:
                 diff_tool = BranchDiff(config, Embedder())
                 engine.export_branch_diff(diff_tool.compare_branches("HEAD", config.data.get("branch_diff", {}).get("base_branch") or diff_tool.get_default_branch()))

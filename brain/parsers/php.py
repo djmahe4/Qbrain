@@ -2,6 +2,77 @@ import re
 import bisect
 from typing import Dict, List, Any
 
+def mask_strings_and_comments(code: str) -> str:
+    masked = list(code)
+    n = len(code)
+    i = 0
+    in_str = False
+    str_char = None
+    escaped = False
+    
+    while i < n:
+        char = code[i]
+        
+        def mask_char(idx):
+            if code[idx] not in ('\n', '\r'):
+                masked[idx] = ' '
+                
+        if in_str:
+            if escaped:
+                escaped = False
+                mask_char(i)
+            elif char == '\\':
+                escaped = True
+                mask_char(i)
+            elif char == str_char:
+                in_str = False
+            else:
+                mask_char(i)
+            i += 1
+            continue
+            
+        if i + 1 < n and code[i:i+2] == '/*':
+            mask_char(i)
+            mask_char(i+1)
+            i += 2
+            while i < n:
+                if i + 1 < n and code[i:i+2] == '*/':
+                    mask_char(i)
+                    mask_char(i+1)
+                    i += 2
+                    break
+                else:
+                    mask_char(i)
+                    i += 1
+            continue
+            
+        if i + 1 < n and code[i:i+2] == '//':
+            mask_char(i)
+            mask_char(i+1)
+            i += 2
+            while i < n and code[i] not in ('\n', '\r'):
+                mask_char(i)
+                i += 1
+            continue
+            
+        if char == '#':
+            mask_char(i)
+            i += 1
+            while i < n and code[i] not in ('\n', '\r'):
+                mask_char(i)
+                i += 1
+            continue
+            
+        if char in ('"', "'"):
+            in_str = True
+            str_char = char
+            i += 1
+            continue
+            
+        i += 1
+        
+    return "".join(masked)
+
 _PHP_PARAM_RE = re.compile(
     r"@param\s+(?:\{([^}]*)\}\s+)?\$(\w+)\s+(.*)", re.IGNORECASE
 )
@@ -161,6 +232,8 @@ def extract_dataflow(code_snippet: str, redirectors: List[str] = None) -> List[D
         line_starts.append(line_starts[-1] + len(line))
     def get_line(pos): return bisect.bisect_right(line_starts, pos)
 
+    masked_code = mask_strings_and_comments(code_snippet)
+
     # 1. Globals Detection
     # Security Level Detection (DVWA-specific heuristic)
     if "DVWA" in code_snippet:
@@ -179,8 +252,8 @@ def extract_dataflow(code_snippet: str, redirectors: List[str] = None) -> List[D
 
     # 0. Parameters Detection
     param_pattern = re.compile(r"function\s+\w+\s*\(([^)]*)\)")
-    for match in param_pattern.finditer(code_snippet):
-        params = match.group(1).split(",")
+    for match in param_pattern.finditer(masked_code):
+        params = code_snippet[match.start(1):match.end(1)].split(",")
         for p in params:
             p = p.strip()
             if p.startswith("$"):
@@ -194,6 +267,7 @@ def extract_dataflow(code_snippet: str, redirectors: List[str] = None) -> List[D
                 })
 
     for match in re.finditer(r"\$_(SESSION|COOKIE|GET|POST|REQUEST|SERVER|FILES)\[['\"](\w+)['\"]\]", code_snippet):
+        if masked_code[match.start()] == ' ': continue
         dataflow.append({
             "type": "global_state",
             "variable": f"$_{match.group(1)}['{match.group(2)}']",
@@ -227,6 +301,7 @@ def extract_dataflow(code_snippet: str, redirectors: List[str] = None) -> List[D
     # 1.1 Constants Detection (define and const)
     define_pattern = re.compile(r"define\s*\(\s*['\"](\w+)['\"]\s*,\s*(['\"].*?['\"]|[^,)]+)\s*\)", re.IGNORECASE)
     for match in define_pattern.finditer(code_snippet):
+        if masked_code[match.start()] == ' ': continue
         dataflow.append({
             "type": "constant",
             "variable": match.group(1),
@@ -237,6 +312,7 @@ def extract_dataflow(code_snippet: str, redirectors: List[str] = None) -> List[D
 
     const_pattern = re.compile(r"\bconst\s+(\w+)\s*=\s*(['\"].*?['\"]|[^;]+);", re.IGNORECASE)
     for match in const_pattern.finditer(code_snippet):
+        if masked_code[match.start()] == ' ': continue
         dataflow.append({
             "type": "constant",
             "variable": match.group(1),
@@ -247,20 +323,20 @@ def extract_dataflow(code_snippet: str, redirectors: List[str] = None) -> List[D
 
     # 2. Assignments
     assign_pattern = re.compile(r"(?<!['\"\w\$])(\$[\w\->\[\]'\" ]+)\s*([\.\+\-\*\/]?=)\s*([^;]+);")
-    for match in assign_pattern.finditer(code_snippet):
+    for match in assign_pattern.finditer(masked_code):
         dataflow.append({
             "type": "assignment",
-            "variable": match.group(1).strip(),
+            "variable": code_snippet[match.start(1):match.end(1)].strip(),
             "operation": match.group(2),
-            "value": match.group(3).strip(),
+            "value": code_snippet[match.start(3):match.end(3)].strip(),
             "pos": match.start(),
             "line": get_line(match.start())
         })
 
     # 3. Includes / Requires
     include_pattern = re.compile(r"(?<!['\"\w\$])\b(include|require)(_once)?\b\s*\(?(['\"].*?['\"]|[^;]{1,100})\)?\s*;", re.IGNORECASE)
-    for match in include_pattern.finditer(code_snippet):
-        path = match.group(3).strip()
+    for match in include_pattern.finditer(masked_code):
+        path = code_snippet[match.start(3):match.end(3)].strip()
         if any(x in path for x in ["<", ">", "\n", "  "]) or len(path) < 2: continue
         dataflow.append({
             "type": "synthesized_call",
@@ -272,9 +348,9 @@ def extract_dataflow(code_snippet: str, redirectors: List[str] = None) -> List[D
 
     # 4. Sinks & Redirections
     sink_pattern = re.compile(r"(?<!['\"\w\$])\b(echo|print|query|die|header|setcookie|mysqli_query|mysqli_prepare|eval|exec|system|shell_exec)\b\s*\(?([^;)\n]{1,200})\)?", re.IGNORECASE)
-    for match in sink_pattern.finditer(code_snippet):
+    for match in sink_pattern.finditer(masked_code):
         sink = match.group(1).lower()
-        args = match.group(2).strip()
+        args = code_snippet[match.start(2):match.end(2)].strip()
         
         # Specialized check for header("Location: ...")
         if sink == "header":
@@ -296,23 +372,11 @@ def extract_dataflow(code_snippet: str, redirectors: List[str] = None) -> List[D
             "line": get_line(match.start())
         })
 
-        continue
-
-        if len(args) > 100: args = args[:97] + "..."
-        args = re.sub(r'["\'].*?["\']', '"..."', args)
-        args = args.replace("\n", " ").replace("\r", "")
-        dataflow.append({
-            "type": "sink",
-            "sink": sink,
-            "args": args,
-            "pos": match.start(),
-            "line": get_line(match.start())
-        })
     # 5. Generic calls for dynamic detection
     call_pattern = re.compile(r"(?<!['\"\w\$])(?!\b(if|elseif|else|switch|for|while|foreach|echo|print|die|include|require|header|setcookie|mysqli_query|mysqli_prepare|eval|exec|system|shell_exec)\b)(\w+)\s*\(([^;)\n]{0,200})\)", re.IGNORECASE)
-    for match in call_pattern.finditer(code_snippet):
+    for match in call_pattern.finditer(masked_code):
         func_name = match.group(2)
-        args = match.group(3).strip()
+        args = code_snippet[match.start(3):match.end(3)].strip()
         
         # Dynamic redirection detection (Heuristic + Registry)
         is_redirect = False
@@ -340,9 +404,11 @@ def extract_dataflow(code_snippet: str, redirectors: List[str] = None) -> List[D
 
     # 5. Conditions & Branches (Decision Points)
     cond_pattern = re.compile(r"\b(if|elseif|else if|else|switch|case|default|for|while|foreach)\b(?:\s*\(?([^{:\n]+))?")
-    for match in cond_pattern.finditer(code_snippet):
+    for match in cond_pattern.finditer(masked_code):
         verb = match.group(1)
-        content = (match.group(2) or "").strip()
+        content = ""
+        if match.group(2):
+            content = code_snippet[match.start(2):match.end(2)].strip()
         if content.endswith(')'): content = content[:-1].strip()
         if content.endswith(':'): content = content[:-1].strip()
         content = content.replace("\n", " ").replace("\r", "")
@@ -369,7 +435,7 @@ def extract_dataflow(code_snippet: str, redirectors: List[str] = None) -> List[D
 
     # 5.6 Variable Usage Detection (for linking behaviors without assignments)
     usage_pattern = re.compile(r"(?<!['\"\w\$])(\$[a-zA-Z_\x7f-\xff][a-zA-Z0-9_\x7f-\xff]*)")
-    for match in usage_pattern.finditer(code_snippet):
+    for match in usage_pattern.finditer(masked_code):
         var_name = match.group(1)
         # Check if already tracked in assignments or global state
         if any(a.get("variable") == var_name for a in dataflow): continue
@@ -382,7 +448,7 @@ def extract_dataflow(code_snippet: str, redirectors: List[str] = None) -> List[D
         })
 
     # 6. Block Delimiters
-    for match in re.finditer(r"[{}]", code_snippet):
+    for match in re.finditer(r"[{}]", masked_code):
         dataflow.append({
             "type": "delimiter",
             "value": match.group(0),
@@ -391,7 +457,7 @@ def extract_dataflow(code_snippet: str, redirectors: List[str] = None) -> List[D
         })
 
     # 7. Control Flow Interrupts
-    for match in re.finditer(r"\b(break|return)\b\s*;?", code_snippet):
+    for match in re.finditer(r"\b(break|return)\b\s*;?", masked_code):
         dataflow.append({
             "type": "interrupt",
             "value": match.group(1),

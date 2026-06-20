@@ -73,7 +73,7 @@ class DataFlowEngine:
         
         # 2. Process Atoms
         constraint_stack = [] # List of strings
-        last_cond = None
+        last_cond_stack = []
         active_switch_cond = None
         
         for atom in raw_atoms:
@@ -88,27 +88,26 @@ class DataFlowEngine:
                 
                 if verb == "switch":
                     active_switch_cond = cond_content
-                    last_cond = cond_content
+                    last_cond_stack.append(cond_content)
                 elif verb == "case" and active_switch_cond:
                     # Sibling isolation: clear previous case from stack
                     if constraint_stack and (constraint_stack[-1].startswith(f"{active_switch_cond} == ") or constraint_stack[-1] == active_switch_cond):
                         constraint_stack.pop()
                     
-                    last_cond = f"{active_switch_cond} == {cond_content}"
+                    val_cond = f"{active_switch_cond} == {cond_content}"
                     # Immediately push if no brace expected (standard switch)
-                    constraint_stack.append(last_cond)
-                    last_cond = None
+                    constraint_stack.append(val_cond)
                 elif verb == "default" and active_switch_cond:
                     if constraint_stack and (constraint_stack[-1].startswith(f"{active_switch_cond} == ") or constraint_stack[-1] == active_switch_cond):
                         constraint_stack.pop()
                     
-                    last_cond = f"{active_switch_cond} == 'default'"
-                    constraint_stack.append(last_cond)
-                    last_cond = None
+                    val_cond = f"{active_switch_cond} == 'default'"
+                    constraint_stack.append(val_cond)
                 elif not is_loop:
-                    last_cond = cond_content
-                
-                if not last_cond and verb == "else": last_cond = "else branch"
+                    if verb == "else":
+                        last_cond_stack.append("else branch")
+                    else:
+                        last_cond_stack.append(cond_content)
                 
                 # Contextual sinks support: if the condition contains a non-constant variable
                 if cond_content and not is_loop:
@@ -128,20 +127,18 @@ class DataFlowEngine:
                                     "type": data.get("type", "unknown"),
                                     "file_path": file_path,
                                     "line": line,
-                                    "constraints": list(constraint_stack)
+                                    "constraints": list(set(constraint_stack + last_cond_stack))
                                 })
             elif a_type == "scenario_switch":
                 var_name = atom["variable"]
                 value = atom["value"]
                 constraint_stack.append(f"{var_name} == '{value}'")
-
             
             elif a_type == "delimiter" or a_type == "interrupt":
                 val = atom.get("value")
                 if val == "{":
-                    if last_cond:
-                        constraint_stack.append(last_cond)
-                        last_cond = None
+                    if last_cond_stack:
+                        constraint_stack.append(last_cond_stack.pop())
                 elif val == "}":
                     if constraint_stack: 
                         popped = constraint_stack.pop()
@@ -151,10 +148,9 @@ class DataFlowEngine:
                             active_switch_cond = None
                 elif val in ("break", "return"):
                     # Interrupt clears the current branch constraints for choices following it
-                    last_cond = None
+                    last_cond_stack.clear()
 
-            curr_active_constraints = list(set(constraint_stack))
-            if last_cond: curr_active_constraints.append(last_cond)
+            curr_active_constraints = list(set(constraint_stack + last_cond_stack))
 
             if a_type == "usage":
                 var = atom["variable"]
@@ -244,7 +240,6 @@ class DataFlowEngine:
                 if base_var == var_raw:
                     var_states[base_var]["type"] = inferred_type
                 else:
-                    var_states[base_var]["properties"][prop_name] = {"type": inferred_type, "value_hint": val_raw[:50]}
                     if var_states[base_var]["type"] == "unknown":
                         var_states[base_var]["type"] = "array" if "[" in var_raw else "object"
 
@@ -257,14 +252,10 @@ class DataFlowEngine:
                     state = "TAINTED"
                     source = next((s for s in ["$_GET", "$_POST", "$_REQUEST", "$_COOKIE", "$_SERVER", "external_input"] if s in val_raw or s in val_raw.lower()), "external")
                 
-                # Initialize state/source if not already tainted/safe
-                # Initialize state/source if not already tainted/safe
                 if "external_input" in val_raw:
                     state = "TAINTED"
                     source = "external"
                 elif state == "CONSTANT": 
-                    # Keep CONSTANT if the assigned value is a literal constant expression
-                    # i.e., type is string/number/boolean and doesn't contain other variables
                     is_const_literal = inferred_type in ("string", "number", "boolean") and not any(
                         v in val_raw for v in var_states if v.startswith("$")
                     )
@@ -273,19 +264,61 @@ class DataFlowEngine:
                         source = "internal"
                 if is_sanitized: state = "SAFE"
                     
+                # Property-specific taint propagation logic
+                prop_state = None
+                prop_source = None
                 for existing_var, existing_data in var_states.items():
                     if existing_var == base_var: continue
                     escaped_var = re.escape(existing_var)
-                    pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
-                    if re.search(pattern, val_raw):
-                        if existing_data.get("state") == "TAINTED" and state != "SAFE":
-                            state = "TAINTED"
-                            source = existing_data.get("source", "external")
-                        elif existing_data.get("state") == "SAFE":
-                            state = "SAFE"
+                    
+                    chain_pattern = fr"(?<![\w\$]){escaped_var}((?:->[\w\-]+|\[['\"]\w+['\"]\])+)"
+                    chain_match = re.search(chain_pattern, val_raw)
+                    if chain_match:
+                        raw_chain = chain_match.group(1)
+                        normalized_parts = []
+                        for part in re.split(r'->|\[[\'"]|[\'"]\]', raw_chain):
+                            part = part.strip()
+                            if part:
+                                normalized_parts.append(part)
+                        p_name = "->".join(normalized_parts)
+                        p_data = existing_data.get("properties", {}).get(p_name)
+                        if p_data and isinstance(p_data, dict):
+                            prop_state = p_data.get("state")
+                            prop_source = p_data.get("source")
+                            break
+
+                if prop_state:
+                    if prop_state == "TAINTED" and state != "SAFE":
+                        state = "TAINTED"
+                        source = prop_source or "external"
+                    elif prop_state == "SAFE":
+                        state = "SAFE"
+                else:
+                    # Fallback to base variable check
+                    for existing_var, existing_data in var_states.items():
+                        if existing_var == base_var: continue
+                        escaped_var = re.escape(existing_var)
+                        pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
+                        if re.search(pattern, val_raw):
+                            if existing_data.get("state") == "TAINTED" and state != "SAFE":
+                                state = "TAINTED"
+                                source = existing_data.get("source", "external")
+                            elif existing_data.get("state") == "SAFE":
+                                state = "SAFE"
                 
-                var_states[base_var]["state"] = state
-                var_states[base_var]["source"] = source
+                if base_var == var_raw:
+                    var_states[base_var]["state"] = state
+                    var_states[base_var]["source"] = source
+                else:
+                    var_states[base_var]["properties"][prop_name] = {
+                        "type": inferred_type,
+                        "value_hint": val_raw[:50],
+                        "state": state,
+                        "source": source
+                    }
+                    if state == "TAINTED":
+                        var_states[base_var]["state"] = "TAINTED"
+                        var_states[base_var]["source"] = source
 
                 # Track choices for scenario fan-out
                 new_choice = {
@@ -366,31 +399,65 @@ class DataFlowEngine:
                         "line": line,
                         "scenario_constraints": s["constraints"]
                     })
-            elif a_type == "sink":
-                sink_name = atom["sink"]
-                args = atom["args"]
+            elif a_type in ("sink", "call"):
+                sink_name = atom.get("sink") or atom.get("function")
+                args = atom.get("args", "")
                 
                 for var_name, data in var_states.items():
                     escaped_var = re.escape(var_name)
                     pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
                     if re.search(pattern, args):
                         if data.get("state") != "CONSTANT":
-                            path = {
-                                "source": data.get("source", "unknown"),
-                                "sink": sink_name,
-                                "variable": var_name,
-                                "state": data.get("state", "unknown"),
-                                "type": data.get("type", "unknown"),
-                                "file_path": file_path,
-                                "line": line,
-                                "constraints": [c for choice in data.get("choices", []) for c in choice.get("constraints", [])]
-                            }
-                            if path not in paths:
-                                paths.append(path)
+                            choices = data.get("choices", [])
+                            if not choices:
+                                path = {
+                                    "source": data.get("source", "unknown"),
+                                    "sink": sink_name,
+                                    "args": args,
+                                    "variable": var_name,
+                                    "state": data.get("state", "unknown"),
+                                    "type": data.get("type", "unknown"),
+                                    "file_path": file_path,
+                                    "line": line,
+                                    "constraints": list(curr_active_constraints)
+                                }
+                                if path not in paths:
+                                    paths.append(path)
+                            else:
+                                for choice in choices:
+                                    combined_constraints = list(set(choice.get("constraints", []) + curr_active_constraints))
+                                    # Filter obvious mutually exclusive security levels
+                                    is_incompatible = False
+                                    for c1 in combined_constraints:
+                                        for c2 in combined_constraints:
+                                            if c1 != c2:
+                                                m1 = re.search(r"security(?:_level)?\s*==\s*['\"](\w+)['\"]", c1)
+                                                m2 = re.search(r"security(?:_level)?\s*==\s*['\"](\w+)['\"]", c2)
+                                                if m1 and m2 and m1.group(1) != m2.group(1):
+                                                    is_incompatible = True
+                                                    break
+                                        if is_incompatible:
+                                            break
+                                    if is_incompatible:
+                                        continue
+                                        
+                                    path = {
+                                        "source": choice.get("source", data.get("source", "unknown")),
+                                        "sink": sink_name,
+                                        "args": args,
+                                        "variable": var_name,
+                                        "state": choice.get("state", data.get("state", "unknown")),
+                                        "type": data.get("type", "unknown"),
+                                        "file_path": file_path,
+                                        "line": line,
+                                        "constraints": combined_constraints
+                                    }
+                                    if path not in paths:
+                                        paths.append(path)
             
             # Clear single-statement condition (no braces) after the first statement in its body
-            if last_cond and a_type in ("assignment", "sink", "call", "usage"):
-                last_cond = None
+            if last_cond_stack and a_type in ("assignment", "sink", "call", "usage"):
+                last_cond_stack.clear()
         return {
             "variable_states": var_states,
             "flow_paths": [{**dict(t), "constraints": list(dict(t).get("constraints", []))} for t in {tuple(sorted((k, tuple(v) if isinstance(v, list) else v) for k, v in d.items())) for d in paths}],

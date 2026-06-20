@@ -4,6 +4,112 @@ from brain.logger import get_logger
 
 logger = get_logger(__name__)
 
+def parse_signature_params(sig: str) -> List[str]:
+    """
+    Extracts parameter names from a function/method signature.
+    E.g. '($key, $response)' -> ['$key', '$response']
+    """
+    if not sig:
+        return []
+    sig = sig.strip()
+    if sig.startswith('(') and sig.endswith(')'):
+        sig = sig[1:-1]
+    
+    parts = []
+    current = []
+    depth = 0
+    in_str = False
+    str_char = None
+    escaped = False
+    for char in sig:
+        if escaped:
+            escaped = False
+            current.append(char)
+            continue
+        if char == '\\':
+            escaped = True
+            current.append(char)
+            continue
+        if in_str:
+            if char == str_char:
+                in_str = False
+            current.append(char)
+            continue
+        if char in ('"', "'", "`"):
+            in_str = True
+            str_char = char
+            current.append(char)
+            continue
+        if char in ('(', '[', '{'):
+            depth += 1
+        elif char in (')', ']', '}'):
+            depth -= 1
+        elif char == ',' and depth == 0:
+            parts.append("".join(current).strip())
+            current = []
+            continue
+        current.append(char)
+    if current:
+        parts.append("".join(current).strip())
+        
+    params = []
+    for p in parts:
+        # Match variable pattern starting with $ for PHP, or default to the last word
+        match = re.search(r'\$[a-zA-Z_\x7f-\xff][a-zA-Z0-9_\x7f-\xff]*', p)
+        if match:
+            params.append(match.group(0))
+        else:
+            # Fallback for other languages (get the parameter name)
+            words = p.split('=')[0].split()
+            if words:
+                params.append(words[-1])
+    return params
+
+def parse_arguments_list(args_str: str) -> List[str]:
+    """
+    Splits arguments passed to a function call by comma, ignoring nested commas inside strings/parens.
+    E.g. "$key, htmlspecialchars($user)" -> ["$key", "htmlspecialchars($user)"]
+    """
+    if not args_str:
+        return []
+    parts = []
+    current = []
+    depth = 0
+    in_str = False
+    str_char = None
+    escaped = False
+    for char in args_str:
+        if escaped:
+            escaped = False
+            current.append(char)
+            continue
+        if char == '\\':
+            escaped = True
+            current.append(char)
+            continue
+        if in_str:
+            if char == str_char:
+                in_str = False
+            current.append(char)
+            continue
+        if char in ('"', "'", "`"):
+            in_str = True
+            str_char = char
+            current.append(char)
+            continue
+        if char in ('(', '[', '{'):
+            depth += 1
+        elif char in (')', ']', '}'):
+            depth -= 1
+        elif char == ',' and depth == 0:
+            parts.append("".join(current).strip())
+            current = []
+            continue
+        current.append(char)
+    if current:
+        parts.append("".join(current).strip())
+    return parts
+
 class SystemicAuditor:
     """
     Connects microscopic local dataflows into macroscopic systemic chains.
@@ -69,12 +175,36 @@ class SystemicAuditor:
             for callee in callees:
                 # Find which variables are passed to this callee
                 passed_to_callee = set()
+                callee_obj = self.func_lookup.get(callee)
+                callee_params = []
+                if callee_obj:
+                    callee_params = parse_signature_params(callee_obj.get("signature", ""))
+                
                 for flow in local_flow:
                     if flow.get("sink") and (flow["sink"] in callee or callee in flow["sink"]):
                         if flow.get("variable") in all_tainted:
-                            passed_to_callee.add(flow["variable"])
+                            # Map caller variable to callee parameter name by position
+                            args_str = flow.get("args", "")
+                            args_list = parse_arguments_list(args_str)
+                            try:
+                                idx = -1
+                                for i, arg_expr in enumerate(args_list):
+                                    escaped_var = re.escape(flow["variable"])
+                                    pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
+                                    if re.search(pattern, arg_expr):
+                                        idx = i
+                                        break
+                                if idx != -1 and idx < len(callee_params):
+                                    passed_to_callee.add(callee_params[idx])
+                                else:
+                                    if callee_params:
+                                        passed_to_callee.add(callee_params[min(idx if idx != -1 else 0, len(callee_params)-1)])
+                                    else:
+                                        # No parameter metadata, pass the caller variable name as fallback
+                                        passed_to_callee.add(flow["variable"])
+                            except Exception:
+                                passed_to_callee.add(flow["variable"])
                 
-                # In macroscopic view, we assume if we pass a tainted var, the callee becomes tainted
                 if callee not in visited:
                     queue.append((callee, passed_to_callee, path + [callee]))
                     

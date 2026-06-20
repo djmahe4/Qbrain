@@ -241,6 +241,15 @@ class LibrarianEngine:
             f.write(f"# {badge} {kind}: {display_name}\n\n")
             if symbol_data.get("line") is not None:
                 f.write(f"**Line:** {symbol_data.get('line')}\n\n")
+            
+            f.write("## Semantic Context\n")
+            if symbol_data.get("archetype"):
+                f.write(f"- **Archetype:** {symbol_data.get('archetype')}\n")
+            if symbol_data.get("mass") is not None:
+                f.write(f"- **Cognitive Mass:** {symbol_data.get('mass'):.2f}\n")
+            if symbol_data.get("potential_energy") is not None:
+                f.write(f"- **Potential Energy:** {symbol_data.get('potential_energy'):.2f}\n")
+            f.write("\n")
             if symbol_data.get("docstring"):
                 f.write(f"## Documentation\n{symbol_data.get('docstring')}\n\n")
             
@@ -256,7 +265,7 @@ class LibrarianEngine:
                 if methods:
                     f.write("### Methods\n")
                     for m in methods:
-                        f.write(f"- [[{self._get_safe_filename(name + ':' + m)}|{m}]] \n")
+                        f.write(f"- [[{self._get_safe_filename(name + ':' + m)}\\|{m}]] \n")
                     f.write("\n")
 
                 # Extract properties
@@ -321,12 +330,14 @@ class LibrarianEngine:
             if symbol_data.get("returns"):
                 ret = symbol_data.get("returns")
                 rtype = ret.get("type") if isinstance(ret, dict) else (ret if isinstance(ret, str) else "")
-                f.write(f"## Returns\n`{rtype}`: {ret.get('description', '') if isinstance(ret, dict) else ''}\n\n")
+                rdesc = ret.get("description", "") if isinstance(ret, dict) else ""
+                if rtype or rdesc:
+                    f.write(f"## Returns\n`{rtype}`: {rdesc}\n\n")
             
             if symbol_data.get("semantic_neighbors"):
                 f.write("## Semantic Neighbors\n")
                 for neighbor, sim in symbol_data["semantic_neighbors"]:
-                    f.write(f"- `[[{self._get_safe_filename(neighbor)}|{neighbor.split(':')[-1]}]]` ({sim * 100:.1f}% similarity)\n")
+                    f.write(f"- `[[{self._get_safe_filename(neighbor)}\\|{neighbor.split(':')[-1]}]]` ({sim * 100:.1f}% similarity)\n")
                 f.write("\n")
             
             callers = symbol_data.get("callers", [])
@@ -336,11 +347,11 @@ class LibrarianEngine:
                 if callers:
                     f.write("### Inbound Callers\n")
                     for caller in callers:
-                        f.write(f"- `[[{self._get_safe_filename(caller)}|{caller.split(':')[-1]}]]` \n")
+                        f.write(f"- `[[{self._get_safe_filename(caller)}\\|{caller.split(':')[-1]}]]` \n")
                 if callees:
                     f.write("### Outbound Callees\n")
                     for callee in callees:
-                        f.write(f"- `[[{self._get_safe_filename(callee)}|{callee.split(':')[-1]}]]` \n")
+                        f.write(f"- `[[{self._get_safe_filename(callee)}\\|{callee.split(':')[-1]}]]` \n")
                 f.write("\n")
                 
             if symbol_data.get("business_rules"):
@@ -361,6 +372,13 @@ class LibrarianEngine:
                 f.write(f"```{lang}\n")
                 f.write(symbol_data["code_snippet"])
                 f.write("\n```\n")
+            
+            behaviors = symbol_data.get("behaviors", [])
+            if behaviors:
+                f.write("## Related Behaviors\n")
+                for b in sorted(list(set(behaviors))):
+                    f.write(f"- [[{b}]]\n")
+                f.write("\n")
     def export_file(self, file_data: dict):
         file_path = file_data.get("file_path")
         if not file_path: return
@@ -372,7 +390,10 @@ class LibrarianEngine:
             "file_path": file_path,
             "language": file_data.get("language"),
             "lines_of_code": file_data.get("lines_of_code"),
-            "size_bytes": file_data.get("size_bytes")
+            "size_bytes": file_data.get("size_bytes"),
+            "cognitive_mass": file_data.get("cognitive_mass"),
+            "potential_energy": file_data.get("potential_energy"),
+            "archetypes": file_data.get("archetypes")
         }
         
         with open(filepath, "w", encoding="utf-8") as f:
@@ -387,6 +408,13 @@ class LibrarianEngine:
                 f.write(f"- **Lines of Code:** {file_data.get('lines_of_code')}\n")
             if file_data.get("size_bytes") is not None:
                 f.write(f"- **Size:** {file_data.get('size_bytes')} bytes\n")
+            if file_data.get("cognitive_mass") is not None:
+                f.write(f"- **Cognitive Mass:** {file_data.get('cognitive_mass'):.2f}\n")
+            if file_data.get("potential_energy") is not None:
+                f.write(f"- **Potential Energy:** {file_data.get('potential_energy'):.2f}\n")
+            if file_data.get("archetypes"):
+                f.write(f"- **Archetypes:** {', '.join(file_data.get('archetypes'))}\n")
+            f.write("\n")
             var_states = file_data.get("variable_states", {})
             if var_states:
                 f.write("## File-Level Data Model\n")
@@ -427,7 +455,8 @@ class LibrarianEngine:
                     line = s.get("line", "—")
                     sig = s.get("signature") or name
                     doc = (s.get("docstring") or "").split("\n")[0]
-                    f.write(f"| [[{name}]] | `{kind}` | {line} | `{sig}` | {doc} |\n")
+                    display_name = name.split(":")[-1] if ":" in name else name
+                    f.write(f"| [[{self._get_safe_filename(name)}\\|{display_name}]] | `{kind}` | {line} | `{sig}` | {doc} |\n")
                 f.write("\n")
 
                 all_rules = []
@@ -464,7 +493,15 @@ class LibrarianEngine:
             if symbols:
                 f.write("## Navigation\n")
                 for s in symbols:
-                    f.write(f"- [[{s}]]\n")
+                    display_s = s.split(":")[-1] if ":" in s else s
+                    f.write(f"- [[{self._get_safe_filename(s)}\\|{display_s}]]\n")
+                f.write("\n")
+                
+            behaviors = file_data.get("behaviors", [])
+            if behaviors:
+                f.write("## Related Behaviors\n")
+                for b in sorted(list(set(behaviors))):
+                    f.write(f"- [[{b}]]\n")
                 f.write("\n")
 
     def _make_transition_label(self, caller_name: str, callee_name: str, funcs: List[dict], sym_meta: dict) -> str:
@@ -574,6 +611,19 @@ class LibrarianEngine:
                                     sink_name = atom.get("sink")
                                     args = atom.get("args", "")
                                     synth_name = f"[{sink_name}] {args}"
+                                
+                                # Add metadata for the synthesized state to sym_meta
+                                if synth_name not in sym_meta:
+                                    sym_meta[synth_name] = {
+                                        "file": current_obj.get("file"),
+                                        "line": atom.get("line"),
+                                        "kind": "Synthesized",
+                                        "params": [],
+                                        "returns": "—",
+                                        "docstring": f"Synthesized {atom.get('type')} in {current_obj.get('name')}",
+                                        "variable_states": {},
+                                        "flow_paths": []
+                                    }
                                 queue.append((synth_name, current, depth + 1, None))
         
         is_hub = len(transitions) > 15
@@ -682,7 +732,26 @@ class LibrarianEngine:
                 display_s = self._sanitize_for_table(s.split(':')[-1])
                 summary = doc.split("\n")[0][:100] if doc else "—"
                 summary = self._sanitize_for_table(summary)
-                f.write(f"| [[{self._get_safe_filename(s)}|{display_s}]] | {pe} | {arch} | {params_str} | {returns_str} | {invariants_str} | {summary} |\n")
+                s_file = s_meta.get("file")
+                s_line = s_meta.get("line")
+                s_kind = s_meta.get("kind")
+                
+                # Format the link to avoid broken wiki links and provide precise references
+                if s_kind == "Module" and s_file:
+                    link_str = f"[[{self._get_safe_filename(s_file)}\\|{display_s}]]"
+                elif s_kind == "Synthesized" and s_file:
+                    line_suffix = f" (L{s_line})" if s_line else ""
+                    link_str = f"[[{self._get_safe_filename(s_file)}\\|{display_s}]]" + line_suffix
+                elif s_file:
+                    symbol_link = f"[[{self._get_safe_filename(s)}\\|{display_s}]]"
+                    file_basename = os.path.basename(s_file)
+                    file_link = f"[[{self._get_safe_filename(s_file)}\\|{file_basename}]]"
+                    line_suffix = f":{s_line}" if s_line else ""
+                    link_str = f"{symbol_link} <br> `in` {file_link}{line_suffix}"
+                else:
+                    link_str = f"[[{self._get_safe_filename(s)}\\|{display_s}]]"
+                
+                f.write(f"| {link_str} | {pe} | {arch} | {params_str} | {returns_str} | {invariants_str} | {summary} |\n")
             f.write("\n")
 
             all_var_states = {}
@@ -776,7 +845,7 @@ class LibrarianEngine:
             f.write("# Docstring & Quality Invariants Warnings\n\n")
             f.write("| Symbol | File | Warnings |\n")
             f.write("|:---|:---|:---|\n")
-            for w in warnings: f.write(f"| [[{self._get_safe_filename(w['name'])}|{w['name'].split(':')[-1]}]] | {w['file']} | {', '.join(w['warnings'])} |\n")
+            for w in warnings: f.write(f"| [[{self._get_safe_filename(w['name'])}\\|{w['name'].split(':')[-1]}]] | {w['file']} | {', '.join(w['warnings'])} |\n")
 
     def export_vulnerabilities(self, vulns: List[dict]):
         """
@@ -955,11 +1024,11 @@ class LibrarianEngine:
             f.write("## 🏋️ Complexity Hotspots (Highest Mass)\n")
             f.write("| Symbol | File | Mass | Archetype |\n")
             f.write("|:---|:---|:---|:---|\n")
-            for h in hotspots.get("complexity", []): f.write(f"| [[{self._get_safe_filename(h['name'])}|{h['name'].split(':')[-1]}]] | {h.get('file', 'unknown')} | {h['mass']:.1f} | {h.get('archetype', '—')} |\n")
+            for h in hotspots.get("complexity", []): f.write(f"| [[{self._get_safe_filename(h['name'])}\\|{h['name'].split(':')[-1]}]] | {h.get('file', 'unknown')} | {h['mass']:.1f} | {h.get('archetype', '—')} |\n")
             f.write("\n## ⚡ Attention Hotspots (Highest Drift / Attention Debt)\n")
             f.write("| Symbol | File | Potential Energy | Archetype |\n")
             f.write("|:---|:---|:---|:---|\n")
-            for h in hotspots.get("attention", []): f.write(f"| [[{self._get_safe_filename(h['name'])}|{h['name'].split(':')[-1]}]] | {h.get('file', 'unknown')} | {h['potential_energy']:.2f} | {h.get('archetype', '—')} |\n")
+            for h in hotspots.get("attention", []): f.write(f"| [[{self._get_safe_filename(h['name'])}\\|{h['name'].split(':')[-1]}]] | {h.get('file', 'unknown')} | {h['potential_energy']:.2f} | {h.get('archetype', '—')} |\n")
 
     def export_archetypes(self, groups: dict):
         filepath = self._safe_path("rules", "archetypes.md")
@@ -971,7 +1040,7 @@ class LibrarianEngine:
                 f.write(f"## {title_arch} (Narrative: [[archetype_{safe_arch}]])\n")
                 for s in symbols[:15]:
                     conf_str = f" (Confidence: {s['confidence']:.2%})" if "confidence" in s else ""
-                    f.write(f"- [[{self._get_safe_filename(s['name'])}|{s['name'].split(':')[-1]}]] {conf_str}\n")
+                    f.write(f"- [[{self._get_safe_filename(s['name'])}\\|{s['name'].split(':')[-1]}]] {conf_str}\n")
                 f.write("\n")
 
     def export_branch_diff(self, diff: dict):
