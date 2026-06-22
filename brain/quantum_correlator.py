@@ -31,8 +31,11 @@ class QuantumCorrelator:
         if not comments or not beliefs:
             return []
 
-        # Get list of symbol names
-        symbols = list(beliefs.keys())
+        # Get list of fully qualified symbol names
+        symbols = [s for s in beliefs.keys() if ":" in s]
+        if not symbols:
+            # Fallback to all keys if none contain colons
+            symbols = list(beliefs.keys())
 
         # Generate texts to embed
         comment_texts = [c.get("docstring") or c.get("comment_text") or "" for c in comments]
@@ -66,7 +69,7 @@ class QuantumCorrelator:
         s_embs_norm = symbol_embs / s_norms
 
         similarity_matrix = np.dot(c_embs_norm, s_embs_norm.T)
-
+        
         pairs = []
         for i, comment in enumerate(comments):
             # Find the best matching symbol for this comment

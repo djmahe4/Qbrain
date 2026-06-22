@@ -2,6 +2,24 @@ import os
 from typing import Dict, Any, List, Optional
 from brain.rule_loader import RuleLoader
 
+def truncate_context_aware(text: str, max_chars: int = 500) -> str:
+    if len(text) <= max_chars:
+        return text
+    sliced = text[:max_chars]
+    # Try paragraph boundary first
+    last_double = sliced.rfind("\n\n")
+    if last_double > max_chars * 0.5:
+        return text[:last_double] + "\n\n... [truncated for context limits]"
+    # Try line boundary next
+    last_single = sliced.rfind("\n")
+    if last_single > max_chars * 0.5:
+        return text[:last_single] + "\n... [truncated for context limits]"
+    # Try word boundary
+    last_space = sliced.rfind(" ")
+    if last_space > max_chars * 0.5:
+        return text[:last_space] + " ... [truncated for context limits]"
+    return sliced + "..."
+
 class QBrainSLM:
     """
     Local SLM Runtime for QBrain.
@@ -16,59 +34,12 @@ class QBrainSLM:
         self.rule_loader = RuleLoader(config)
         self.rules_context = self.rule_loader.get_consolidated_rules_context()
 
-    def generate(self, symbol_or_query: str, context_notes: List[Dict[str, Any]]) -> str:
+    def generate(self, symbol_or_query: str, context_notes: List[Dict[str, Any]], correlation_context: Optional[str] = None) -> str:
         """
         Generates summary/insights using context notes, diffs, rules, and ADRs.
         """
-        # Build unified context prompt for reference / display
-        prompt_parts = []
-        
-        # 1. System Rules
-        prompt_parts.append("=== SYSTEM RULES & CONSTRAINTS ===")
-        config_rules = self.rules_context.get("config_rules") or {}
-        if config_rules:
-            prompt_parts.append(f"Config Rules: {config_rules}")
-        
-        markdown_rules = self.rules_context.get("markdown_rules") or {}
-        for name, content in markdown_rules.items():
-            prompt_parts.append(f"Rule [{name}]:\n{content[:500]}...")
-
-        # 2. ADR Context
-        prompt_parts.append("\n=== ARCHITECTURE DECISION RECORDS (ADRs) ===")
-        if self.adr_list:
-            if isinstance(self.adr_list, dict):
-                content = self.adr_list.get("content") or ""
-                prompt_parts.append(content)
-            else:
-                prompt_parts.append(str(self.adr_list))
-        else:
-            prompt_parts.append("No active ADRs.")
-
-        # 3. Branch Diffs
-        prompt_parts.append("\n=== SEMANTIC BRANCH DIFF ===")
-        if self.semantic_diff:
-            prompt_parts.append(f"Base Branch: {self.semantic_diff.get('branch_y')}")
-            prompt_parts.append(f"Head Branch: {self.semantic_diff.get('branch_x')}")
-            prompt_parts.append(f"Added Files: {self.semantic_diff.get('added_files')}")
-            prompt_parts.append(f"Deleted Files: {self.semantic_diff.get('deleted_files')}")
-            prompt_parts.append("Semantic Changes:")
-            for change in self.semantic_diff.get("semantic_changes", []):
-                prompt_parts.append(f" - {change['file']} (distance: {change['distance']:.4f})")
-        else:
-            prompt_parts.append("No branch diff context provided.")
-
-        # 4. RAG Context Notes
-        prompt_parts.append("\n=== RAG CONTEXT NOTES ===")
-        if context_notes:
-            for idx, note in enumerate(context_notes):
-                prompt_parts.append(f"\nNote {idx+1}: {note.get('file_path')}")
-                prompt_parts.append(note.get("content", "")[:1000])
-        else:
-            prompt_parts.append("No relevant vault notes retrieved.")
-
-        prompt_parts.append(f"\nQUERY: {symbol_or_query}")
-
         # Construct a beautiful analytical response based on the compiled context
+
         # This provides a deterministic, highly intelligent offline SLM analysis.
         response = []
         response.append(f"# QBrain Cognitive Analysis for: `{symbol_or_query}`\n")
@@ -130,5 +101,11 @@ class QBrainSLM:
         else:
             response.append(f"To query the codebase for `{symbol_or_query}`, QBrain loaded {len(context_notes)} matching vault notes.")
             response.append("All structural dependencies and physics metrics have been synthesized in the local graph index.")
+
+        # Analyze Quantum Correlations if context is passed
+        if correlation_context:
+            response.append("## 🔀 Semantic Correlations")
+            response.append(correlation_context)
+            response.append("")
 
         return "\n".join(response)

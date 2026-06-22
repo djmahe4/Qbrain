@@ -1270,7 +1270,7 @@ class LibrarianEngine:
             "gates": gates,
             "authenticated_zone": sorted(list(auth_caller_set)),
             "public_zone": sorted(list(all_syms - auth_caller_set)),
-            "generated_at": datetime.datetime.utcnow().isoformat()
+            "generated_at": datetime.datetime.now(datetime.UTC)
         }
         
         rules_meta_dir = os.path.join(metadata_dir, "rules")

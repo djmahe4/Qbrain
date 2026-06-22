@@ -37,6 +37,15 @@ class DocstringParser:
             is_meta = any(ex_name in path or ex_name in name for ex_name in excluded_names)
             
             if not (is_doc or is_meta):
+                doc = f.get("docstring")
+                if not doc or doc == "\\" or doc.strip() == "":
+                    try:
+                        q_name = f.get("qualified_name") or f.get("name")
+                        snippet = self.indexer.get_code_snippet(q_name)
+                        if snippet.get("docstring"):
+                            f["docstring"] = snippet["docstring"]
+                    except Exception:
+                        pass
                 filtered.append(f)
                 
         return filtered

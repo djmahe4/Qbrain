@@ -163,7 +163,7 @@ class Config:
         # Dynamically compute project name from repo_path
         repo = self.repo_path
         import re
-        safe_name = re.sub(r"[^a-zA-Z0-9\-]", "-", repo)
+        safe_name = re.sub(r"[^a-zA-Z0-9\-_]", "-", repo)
         safe_name = re.sub(r"-+", "-", safe_name)
         return safe_name.strip("-")
 

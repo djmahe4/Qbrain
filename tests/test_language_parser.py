@@ -327,3 +327,100 @@ def test_parse_coding_standards_gates_naming_rules():
     assert not any("verb-noun" in w for w in warnings)
 
 
+# ─────────────────────────── Multi-Language Dataflow Tests ───────────────────────────
+
+def test_python_dataflow_extraction():
+    from brain.language_parser import extract_dataflow
+    code = (
+        "def process_data(val):\n"
+        "    x = val + 1\n"
+        "    if x > 10:\n"
+        "        raise ValueError('Too large')\n"
+        "    return x\n"
+    )
+    df = extract_dataflow(code, "python")
+    assert len(df) > 0
+    # Parameter/assignment detection
+    assert any(atom.get("type") == "assignment" and atom.get("variable") == "val" for atom in df)
+    assert any(atom.get("type") == "assignment" and atom.get("variable") == "x" for atom in df)
+    # Condition/raise/return checks
+    assert any(atom.get("type") == "condition" and "x > 10" in atom.get("content", "") for atom in df)
+
+def test_javascript_dataflow_extraction():
+    from brain.language_parser import extract_dataflow
+    code = (
+        "function validate(input) {\n"
+        "    const parsed = parseInt(input);\n"
+        "    if (isNaN(parsed)) {\n"
+        "        throw new Error('NaN');\n"
+        "    }\n"
+        "    return parsed;\n"
+        "}\n"
+    )
+    df = extract_dataflow(code, "javascript")
+    assert len(df) > 0
+    assert any(atom.get("type") == "assignment" and atom.get("variable") == "input" for atom in df)
+    assert any(atom.get("type") == "assignment" and atom.get("variable") == "parsed" for atom in df)
+    assert any(atom.get("type") == "condition" and "isNaN" in atom.get("content", "") for atom in df)
+
+def test_rust_dataflow_extraction():
+    from brain.language_parser import extract_dataflow
+    code = (
+        "fn check_val(x: i32) -> bool {\n"
+        "    let y = x + 2;\n"
+        "    if y == 5 {\n"
+        "        panic!();\n"
+        "    }\n"
+        "    true\n"
+        "}\n"
+    )
+    df = extract_dataflow(code, "rust")
+    assert len(df) > 0
+    assert any(atom.get("type") == "assignment" and atom.get("variable") == "x" for atom in df)
+    assert any(atom.get("type") == "assignment" and atom.get("variable") == "y" for atom in df)
+
+def test_go_dataflow_extraction():
+    from brain.language_parser import extract_dataflow
+    code = (
+        "func Process(val int) int {\n"
+        "    res := val + 5\n"
+        "    if res > 100 {\n"
+        "        log.Fatal('error')\n"
+        "    }\n"
+        "    return res\n"
+        "}\n"
+    )
+    df = extract_dataflow(code, "go")
+    assert len(df) > 0
+    assert any(atom.get("type") == "assignment" and atom.get("variable") == "val" for atom in df)
+    assert any(atom.get("type") == "assignment" and atom.get("variable") == "res" for atom in df)
+
+def test_solidity_dataflow_extraction():
+    from brain.language_parser import extract_dataflow
+    code = (
+        "function verify(uint256 val) public {\n"
+        "    uint256 x = val * 2;\n"
+        "    require(x > 0, 'zero');\n"
+        "}\n"
+    )
+    df = extract_dataflow(code, "solidity")
+    assert len(df) > 0
+    assert any(atom.get("type") == "assignment" and atom.get("variable") == "val" for atom in df)
+    assert any(atom.get("type") == "assignment" and atom.get("variable") == "x" for atom in df)
+
+def test_cpp_dataflow_extraction():
+    from brain.language_parser import extract_dataflow
+    code = (
+        "int process(int val) {\n"
+        "    int res = val + 1;\n"
+        "    if (res < 0) return -1;\n"
+        "    return res;\n"
+        "}\n"
+    )
+    df = extract_dataflow(code, "cpp")
+    assert len(df) > 0
+    assert any(atom.get("type") == "assignment" and atom.get("variable") == "val" for atom in df)
+    assert any(atom.get("type") == "assignment" and atom.get("variable") == "res" for atom in df)
+
+
+

@@ -162,7 +162,8 @@ def brain(
     adr_title: Optional[str] = typer.Option(None, "--adr-title", help="ADR Title (for create)"),
     adr_content: Optional[str] = typer.Option(None, "--adr-content", help="ADR Content (for create/update)"),
     adr_id: Optional[str] = typer.Option(None, "--adr-id", help="ADR ID (for get/update)"),
-    adr_status: Optional[str] = typer.Option(None, "--adr-status", help="ADR Status (for create/update)")
+    adr_status: Optional[str] = typer.Option(None, "--adr-status", help="ADR Status (for create/update)"),
+    correlate: bool = typer.Option(True, "--correlate/--no-correlate", help="Perform quantum correlation analysis")
 ):
     """
     Query the qbrain cognitive model & local SLM.
@@ -173,6 +174,7 @@ def brain(
     from brain.slm import QBrainSLM
 
     config, indexer, embedder, scorer, store, cem, san, cognitive, api = get_cognitive_engine()
+
     
     # 1. Check if it is a pure ADR operation
     if adr:
@@ -209,9 +211,51 @@ def brain(
     except Exception:
         adr_list = {}
 
+    # 4. Quantum Correlation
+    correlation_context = None
+    drift_events = []
+    if correlate:
+        try:
+            from brain.sync_guard import SyncGuard
+            from brain.quantum_correlator import QuantumCorrelator
+            from brain.librarian import LibrarianEngine
+            from brain.docstring_parser import DocstringParser
+            from brain.git_watcher import GitWatcher
+
+            guard = SyncGuard()
+            watcher = GitWatcher(config, indexer, scorer, embedder)
+            last_commit = watcher.get_last_processed_commit()
+            
+            drift_events = guard.run_tier1(config.repo_path, last_commit)
+            drift_events += guard.run_tier2(config.repo_path, indexer.persistence)
+            
+            doc_parser = DocstringParser(indexer)
+            comments = doc_parser.get_functions_with_docstrings()
+            beliefs = indexer.persistence.get_all_variable_states()
+
+            
+            graph_symbols = {r['name'] for r in indexer.search_graph(".*") if 'name' in r}
+            
+            correlator = QuantumCorrelator()
+            threshold = config.data.get("correlation_threshold", 0.72)
+            pairs = correlator.entangle(comments, beliefs, embedder, threshold=threshold)
+            pairs = correlator.detect_flips(pairs, beliefs)
+            pairs = correlator.detect_decoherence(pairs, graph_symbols)
+            correlator.persist(pairs, indexer.persistence)
+            
+            correlation_context = correlator.to_context_summary(pairs)
+            
+            # Export blackboard note if we have interesting events
+            if drift_events or any(p.flip_detected or p.decoherence for p in pairs):
+                librarian = LibrarianEngine(config.repo_path, config.data.get("vault_path"), indexer=indexer)
+                librarian.registry = getattr(indexer, "registry", None)
+                librarian.export_blackboard_note(drift_events, pairs)
+        except Exception as e:
+            console.print(f"[yellow]Correlation pass skipped: {e}[/yellow]")
+
     # 3. Call local SLM with unified prompt
     slm = QBrainSLM(config, retriever, adr_list, semantic_diff)
-    response = slm.generate(symbol_or_query, context_notes)
+    response = slm.generate(symbol_or_query, context_notes, correlation_context=correlation_context)
     
     console.print("[bold cyan]qbrain SLM Cognitive Summary:[/bold cyan]")
     # Stream/print output
