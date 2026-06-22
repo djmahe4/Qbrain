@@ -334,7 +334,8 @@ def sync_library(config, indexer, console, deep=False):
                 "potential_energy": cognitive_info.get(f["name"], {}).get("potential_energy", 0.0),
                 "archetype": cognitive_info.get(f["name"], {}).get("archetype", "generic"),
                 "variable_states": f.get("variable_states", {}),
-                "flow_paths": f.get("flow_paths", [])
+                "flow_paths": f.get("flow_paths", []),
+                "code_snippet": f.get("code_snippet")
             } for f in funcs}
 
             # 9. Scenarios - run behavior models first to extract links

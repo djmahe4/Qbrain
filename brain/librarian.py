@@ -256,6 +256,27 @@ class LibrarianEngine:
         filepath = self._safe_path("symbols", f"{safe_name}.md")
         kind = symbol_data.get("kind", "Function")
         
+        # Calculate confidence score and tier
+        has_docstring = 1 if symbol_data.get("docstring") else 0
+        has_taint = 1 if "_TAINT_" in symbol_data.get("variable_states", {}) else 0
+        entanglement_count = len(symbol_data.get("callees", []))
+        caller_count = len(symbol_data.get("callers", []))
+        
+        confidence = (has_docstring * 0.4) + (has_taint * 0.3) + (entanglement_count * 0.2) + (caller_count * 0.1)
+        
+        if confidence < 0.1:
+            tier = "skip"
+        elif confidence < 0.5:
+            tier = "stub"
+        else:
+            tier = "full"
+            
+        if self.indexer and getattr(self.indexer, "persistence", None):
+            self.indexer.persistence.save_symbol_confidence(name, confidence, tier)
+            
+        if tier == "skip":
+            return
+
         frontmatter = {
             "type": "symbol",
             "kind": kind,
@@ -277,6 +298,30 @@ class LibrarianEngine:
         elif kind == "Variable": badge = "📌"
         elif kind == "Module": badge = "📦"
         elif kind == "Method": badge = "⚡"
+
+        if tier == "stub":
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write("---\n")
+                yaml.safe_dump(frontmatter, f, default_flow_style=False)
+                f.write("---\n\n")
+                f.write(f"# {badge} {kind}: {display_name}\n\n")
+                if symbol_data.get("line") is not None:
+                    f.write(f"**Line:** {symbol_data.get('line')}\n\n")
+                
+                callers = symbol_data.get("callers", [])
+                callees = symbol_data.get("callees", [])
+                if callers or callees:
+                    f.write("## Entanglements\n")
+                    if callers:
+                        f.write("### Inbound Callers\n")
+                        for caller in callers:
+                            f.write(f"- [[symbols/{self._get_safe_filename(caller)}\\|{caller.split(':')[-1]}]] \n")
+                    if callees:
+                        f.write("### Outbound Callees\n")
+                        for callee in callees:
+                            f.write(f"- [[symbols/{self._get_safe_filename(callee)}\\|{callee.split(':')[-1]}]] \n")
+                    f.write("\n")
+            return
 
         with open(filepath, "w", encoding="utf-8") as f:
             f.write("---\n")
@@ -328,6 +373,9 @@ class LibrarianEngine:
                 f.write("|:---|:---|:---|:---|\n")
                 for var, data in var_states.items():
                     if var == name: continue # Skip the class definition itself here
+                    if not isinstance(data, dict):
+                        f.write(f"| `{var}` | `unknown` | `CONSTANT` | value `{data}` |\n")
+                        continue
                     state = data.get("state", "CONSTANT")
                     vtype = data.get("type", "unknown")
                     details = []
@@ -698,6 +746,75 @@ class LibrarianEngine:
             "is_macro_map": is_hub
         }
 
+    def _analyze_behavioral_characteristics(self, state_name: str, state_meta: dict) -> dict:
+        code = state_meta.get("code_snippet", "")
+        # Fallback to check if we can query it or if it is a synthesized state
+        if not code:
+            # If it's a synthesized redirect/sink/etc.
+            if state_name.startswith("[") or state_name.startswith("Redirect:"):
+                has_recovery = "try" in state_name.lower() or "catch" in state_name.lower()
+                has_perf = any(x in state_name.lower() for x in ["query", "http", "curl", "request", "timeout"])
+                return {
+                    "loops": "none",
+                    "conditions": "none",
+                    "boundaries": "none",
+                    "recovery": "exception handling / try-catch" if has_recovery else "none",
+                    "performance": "database/network operations" if has_perf else "none"
+                }
+            return {
+                "loops": "none",
+                "conditions": "none",
+                "boundaries": "none",
+                "recovery": "none",
+                "performance": "none"
+            }
+            
+        code_no_comments = code
+        if code:
+            code_no_comments = re.sub(r'/\*.*?\*/', '', code, flags=re.DOTALL)
+            code_no_comments = re.sub(r'"""\s*.*?\s*"""', '', code_no_comments, flags=re.DOTALL)
+            code_no_comments = re.sub(r"'''\s*.*?\s*'''", '', code_no_comments, flags=re.DOTALL)
+            code_no_comments = re.sub(r'//.*', '', code_no_comments)
+            code_no_comments = re.sub(r'#.*', '', code_no_comments)
+            
+        # 1. Loops
+        loops = []
+        if re.search(r'\b(?:for|while|foreach)\b', code_no_comments):
+            loops.append("loop (for/while/foreach)")
+        
+        # 2. Conditions
+        conditions = []
+        if re.search(r'\b(?:if|else|elseif|switch|case)\b', code_no_comments):
+            conditions.append("conditionals (if/else/switch)")
+            
+        # 3. Boundary Values & Equivalence Partitioning
+        boundaries = []
+        bound_matches = re.findall(r'([\w\.\$]+(?:\[[^\]]+\])?)\s*(>=|<=|==|!=|<|>)\s*([\w\.\$]+|["\']\w*["\'])', code_no_comments)
+        for match in bound_matches:
+            boundaries.append(f"`{' '.join(match)}`")
+            
+        # 4. Recovery
+        recovery = []
+        if re.search(r'\b(?:try|catch|except|finally)\b', code_no_comments):
+            recovery.append("exception handling / try-catch")
+            
+        # 5. Stress & Performance
+        performance = []
+        if "timeout" in code_no_comments.lower():
+            performance.append("timeout configuration")
+        if re.search(r'\b(?:select|insert|update|delete|query|prepare|db)\b', code_no_comments, re.IGNORECASE):
+            performance.append("database operations")
+        if re.search(r'\b(?:curl|request|http|socket)\b', code_no_comments, re.IGNORECASE):
+            performance.append("network/external operations")
+            
+        return {
+            "loops": ", ".join(loops) if loops else "none",
+            "conditions": ", ".join(conditions) if conditions else "none",
+            "boundaries": ", ".join(list(set(boundaries))[:4]) if boundaries else "none",
+            "recovery": ", ".join(recovery) if recovery else "none",
+            "performance": ", ".join(performance) if performance else "none"
+        }
+
     def export_behavior(self, behavior_data: dict):
         print(f"DEBUG: Exporting behavior: {behavior_data.get('name')}")
         name = behavior_data.get("name")
@@ -920,6 +1037,17 @@ class LibrarianEngine:
                     link_str = f"[[symbols/{self._get_safe_filename(s)}\\|{display_s}]]"
                 
                 f.write(f"| {link_str} | {pe} | {arch} | {params_str} | {returns_str} | {invariants_str} | {summary} |\n")
+            f.write("\n")
+
+            # Behavioral Characteristics & Safety Constraints
+            f.write("## Behavioral Characteristics & Safety Constraints\n\n")
+            f.write("| State | Loops | Conditions | Boundaries / Equivalence | Recovery | Stress / Performance |\n")
+            f.write("| :--- | :--- | :--- | :--- | :--- | :--- |\n")
+            for s in states:
+                s_meta = meta.get(s, {})
+                char = self._analyze_behavioral_characteristics(s, s_meta)
+                display_s = self._sanitize_for_table(s.split(':')[-1])
+                f.write(f"| `{display_s}` | {char['loops']} | {char['conditions']} | {char['boundaries']} | {char['recovery']} | {char['performance']} |\n")
             f.write("\n")
 
             # Track A.1 Variable and Taint table with Semantic Labels

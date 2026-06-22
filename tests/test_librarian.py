@@ -222,3 +222,55 @@ def test_librarian_exports_behavior_with_dataflow_and_variables(tmp_path):
     assert '"$_GET"' in content
     assert '"echo"' in content
 
+
+def test_behavioral_characteristics_export(tmp_path):
+    vault_path = tmp_path / "obsidian_vault"
+    engine = LibrarianEngine(str(tmp_path), str(vault_path))
+    engine.setup_vault()
+
+    behavior_data = {
+        "name": "login-flow",
+        "states": ["REQUEST_RECEIVED", "VALIDATING"],
+        "transitions": [
+            {"from": "REQUEST_RECEIVED", "to": "VALIDATING"}
+        ],
+        "state_meta": {
+            "REQUEST_RECEIVED": {
+                "file": "src/app.py",
+                "line": 10,
+                "kind": "Function",
+                "code_snippet": "def receive_request(req):\n    try:\n        for item in req.items:\n            if item.val >= 100:\n                query = 'SELECT * FROM users WHERE id = ' + item.val\n                db.execute(query)\n    except Exception as e:\n        pass\n"
+            },
+            "VALIDATING": {
+                "file": "src/app.py",
+                "line": 20,
+                "kind": "Function",
+                "code_snippet": "def validate():\n    if timeout > 30:\n        raise TimeoutError()\n"
+            }
+        }
+    }
+
+    engine.export_behavior(behavior_data)
+    behavior_file = vault_path / "behaviors" / "login-flow.md"
+    assert os.path.exists(behavior_file)
+    with open(behavior_file, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    assert "## Behavioral Characteristics & Safety Constraints" in content
+    # For REQUEST_RECEIVED:
+    # Loops: loop (for/while/foreach)
+    # Conditions: conditionals (if/else/switch)
+    # Boundaries: `item.val >= 100`
+    # Recovery: exception handling / try-catch
+    # Performance: database operations
+    assert "loop (for/while/foreach)" in content
+    assert "conditionals (if/else/switch)" in content
+    assert "`item.val >= 100`" in content
+    assert "exception handling / try-catch" in content
+    assert "database operations" in content
+
+    # For VALIDATING:
+    # Stress/Performance: timeout configuration
+    assert "timeout configuration" in content
+
+
