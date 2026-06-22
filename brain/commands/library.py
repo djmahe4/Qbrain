@@ -17,7 +17,7 @@ from brain.parsers import php as php_parser
 
 logger = logging.getLogger(__name__)
 
-def sync_library(config, indexer, console):
+def sync_library(config, indexer, console, deep=False):
     repo_path = config.repo_path
     vault_path = config.data.get("vault_path", os.path.join(repo_path, "obsidian_vault"))
     
@@ -501,6 +501,26 @@ def sync_library(config, indexer, console):
                 diff_tool = BranchDiff(config, Embedder())
                 engine.export_branch_diff(diff_tool.compare_branches("HEAD", config.data.get("branch_diff", {}).get("base_branch") or diff_tool.get_default_branch()))
             except Exception: pass
+
+            # Deep Graph Reconciliation (Sprint 4)
+            if deep:
+                console.print("Running deep graph-vs-disk reconciliation...")
+                from brain.sync_guard import SyncGuard
+                guard = SyncGuard()
+                drift_events = guard.run_tier3(repo_path, indexer)
+                
+                # Fetch currently tracked file count
+                total_files = len(set(f.get("file") for f in funcs if f.get("file")))
+                tombstones = [e.file_path for e in drift_events if e.event_type == "TOMBSTONE"]
+                
+                if drift_events:
+                    engine.export_blackboard_note(drift_events)
+                    console.print(f"Exported blackboard note documenting {len(drift_events)} drift events.")
+                    
+                if guard.should_trigger_repopulation(drift_events, total_files):
+                    console.print(f"[yellow]Tombstones exceed threshold ({len(tombstones)} / {total_files}). Triggering selective vault pruning...[/yellow]")
+                    engine.prune_stale_pages(tombstones)
+
             console.print("[green]Obsidian Vault synchronized successfully![/green]")
     except Exception as e:
         console.print(f"[red]Error during librarian sync:[/red] {e}")

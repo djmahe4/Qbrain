@@ -233,11 +233,12 @@ app.add_typer(library_app, name="library")
 
 @library_app.command("sync")
 def library_sync(
-    repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Path to the repository to sync")
+    repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Path to the repository to sync"),
+    deep: bool = typer.Option(False, "--deep", help="Run Tier 3 tombstone + orphan reconciliation")
 ):
     """Sync symbols, behaviors, files, changes, rules to Obsidian vault."""
     config, indexer, _, _ = get_engine(repo)
-    library_cmd.sync_library(config, indexer, console)
+    library_cmd.sync_library(config, indexer, console, deep=deep)
 
 
 if __name__ == "__main__":

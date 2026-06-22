@@ -197,3 +197,82 @@ class SyncGuard:
                 logger.error(f"Failed to save manifest snapshot: {e}")
 
         return events
+
+    def run_tier3(self, repo_path: str, indexer: "Indexer") -> List[DriftEvent]:
+        """
+        Deep graph reconciliation (Tier 3).
+        Queries all file paths referenced in the MCP graph and compares them against disk.
+        """
+        events = []
+        try:
+            # Query graph for files associated with symbols
+            query = "MATCH (n) WHERE n:Function OR n:Method OR n:Module OR n:Class OR n:Interface OR n:Enum RETURN DISTINCT n.file_path AS file, n.file AS file_alt"
+            raw_res = indexer.query_graph(query)
+            
+            graph_files = set()
+            for r in raw_res:
+                f_path = r.get("file") or r.get("file_alt")
+                if f_path:
+                    # Normalize path format
+                    norm_path = f_path.replace("\\", "/").strip("/")
+                    graph_files.add(norm_path)
+        except Exception as e:
+            logger.error(f"Failed to query graph files for Tier 3: {e}")
+            return []
+
+        # Walk disk to collect existing tracked files
+        disk_files = set()
+        for root, _, files in os.walk(repo_path):
+            rel_root = os.path.relpath(root, repo_path)
+            if rel_root != "." and any(part.startswith(".") for part in rel_root.split(os.sep)):
+                continue
+            for file in files:
+                _, ext = os.path.splitext(file.lower())
+                if ext in self.TRACKED_EXTENSIONS:
+                    full_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(full_path, repo_path).replace("\\", "/").strip("/")
+                    disk_files.add(rel_path)
+
+        # 1. TOMBSTONES: In graph, but missing on disk
+        for g_file in graph_files:
+            if g_file not in disk_files:
+                events.append(
+                    DriftEvent(
+                        tier=3,
+                        event_type="TOMBSTONE",
+                        file_path=g_file,
+                        detail="File exists in the graph database but is missing from disk",
+                        drift_seconds=0.0,
+                        severity="WARN"
+                    )
+                )
+
+        # 2. UNINDEXED: On disk, but missing in graph
+        for d_file in disk_files:
+            if d_file not in graph_files:
+                events.append(
+                    DriftEvent(
+                        tier=3,
+                        event_type="UNINDEXED",
+                        file_path=d_file,
+                        detail="File exists on disk but is not indexed in the graph database",
+                        drift_seconds=0.0,
+                        severity="INFO"
+                    )
+                )
+
+        return events
+
+    def should_trigger_repopulation(self, events: List[DriftEvent], total_files: int) -> bool:
+        """
+        Decision rule to trigger a selective repopulation of the Obsidian vault.
+        Triggered if merge-base failed (REBASE_DETECTED) or tombstones exceed 20% of total files.
+        """
+        if any(e.event_type == "REBASE_DETECTED" for e in events):
+            return True
+            
+        tombstone_or_deleted = {e.file_path for e in events if e.event_type in ("TOMBSTONE", "DELETED") and e.file_path}
+        if total_files > 0 and (len(tombstone_or_deleted) / total_files) > 0.20:
+            return True
+            
+        return False
