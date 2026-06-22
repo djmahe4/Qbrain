@@ -178,12 +178,14 @@ class DataFlowEngine:
 
             if a_type == "global_state":
                 var = atom["variable"]
+                is_taint_source = any(s in var for s in ["$_GET", "$_POST", "$_REQUEST", "$_COOKIE", "$_SERVER", "$_FILES"])
+                state = "TAINTED" if is_taint_source else "GLOBAL_STATE"
                 var_states[var] = {
-                    "state": "GLOBAL_STATE",
+                    "state": state,
                     "type": "dynamic",
                     "source": atom["source"],
                     "constraints": curr_active_constraints,
-                    "choices": [{"value": atom["source"], "constraints": curr_active_constraints, "state": "GLOBAL_STATE"}]
+                    "choices": [{"value": atom["source"], "constraints": curr_active_constraints, "state": state}]
                 }
             elif a_type == "symbol_definition":
                 s_kind = atom.get("kind")
@@ -210,9 +212,8 @@ class DataFlowEngine:
                         "state": "MEMBER"
                     }
 
-            elif a_type == "call":
-                # Standard call handling - redirects now handled by synthesized_call atoms
-                pass
+            # Note: a_type == "call" is handled by the elif a_type in ("sink", "call") block below.
+            # Do NOT add an elif a_type == "call": pass here — that would short-circuit taint path generation.
 
             
             elif a_type == "constant":
