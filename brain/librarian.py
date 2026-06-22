@@ -135,7 +135,7 @@ class LibrarianEngine:
         """Create standard vault directories."""
         dirs = [
             "symbols", "files", "behaviors", "behaviors/_json", "changes", "changes/recent",
-            "changes/archive", "rules", "narratives"
+            "changes/archive", "rules", "narratives", "blackboard"
         ]
         for d in dirs:
             os.makedirs(os.path.join(self.vault_path, d), exist_ok=True)
@@ -1383,3 +1383,138 @@ class LibrarianEngine:
             for fl in diff.get("files", []):
                 safe_file = self._get_safe_filename(fl['file'])
                 f.write(f"| [[files/{safe_file}\\|{fl['file']}]] | {fl.get('status')} | {fl.get('churn')} | {fl.get('relevance_score')} |\n")
+
+    def export_blackboard_note(self, drift_events, correlation_events=None):
+        """Export a blackboard note documenting system drift and cognitive deviations."""
+        import datetime
+        now = datetime.datetime.now()
+        timestamp_str = now.strftime("%Y-%m-%d_%H%M%S")
+        filename = f"{timestamp_str}.md"
+        filepath = os.path.join(self.vault_path, "blackboard", filename)
+        
+        event_count = len(drift_events) + (len(correlation_events) if correlation_events else 0)
+        
+        tier_max = 0
+        severity_max = "INFO"
+        
+        severity_hierarchy = {"INFO": 1, "WARN": 2, "CRITICAL": 3}
+        for e in drift_events:
+            if e.tier > tier_max:
+                tier_max = e.tier
+            if severity_hierarchy.get(e.severity, 1) > severity_hierarchy.get(severity_max, 1):
+                severity_max = e.severity
+                
+        frontmatter = (
+            "---\n"
+            "type: blackboard\n"
+            f"generated_at: {now.isoformat()}\n"
+            f"tier_max: {tier_max}\n"
+            f"event_count: {event_count}\n"
+            f"severity_max: {severity_max}\n"
+            "---\n\n"
+        )
+        
+        content = frontmatter
+        content += f"# Blackboard Audit Note — {now.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        
+        content += "## 📡 Drift Events\n\n"
+        if drift_events:
+            content += "| File | Event | Tier | Severity | Detail |\n"
+            content += "| --- | --- | --- | --- | --- |\n"
+            for e in drift_events:
+                content += f"| {e.file_path} | {e.event_type} | {e.tier} | {e.severity} | {self._sanitize_for_table(e.detail)} |\n"
+        else:
+            content += "No structural/filesystem drift events detected.\n"
+        content += "\n"
+        
+        tombstones = [e for e in drift_events if e.event_type == "TOMBSTONE"]
+        content += "## 💀 Tombstones\n\n"
+        if tombstones:
+            for e in tombstones:
+                content += f"- [[symbols/{self._get_safe_filename(e.file_path)}.md]] (stale graph node)\n"
+        else:
+            content += "No tombstones detected.\n"
+        content += "\n"
+        
+        unindexed = [e for e in drift_events if e.event_type == "UNINDEXED"]
+        content += "## 🆕 Unindexed Files\n\n"
+        if unindexed:
+            for e in unindexed:
+                content += f"- {e.file_path}\n"
+        else:
+            content += "No unindexed files detected.\n"
+        content += "\n"
+        
+        content += "## 🔀 Semantic Flips\n\n"
+        content += "No semantic flips detected.\n\n"
+        
+        content += "## 👻 Decoherence\n\n"
+        content += "No decoherence events detected.\n"
+        
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    def prune_stale_pages(self, tombstoned_files: list):
+        """
+        Tombstone-aware pruning: scan symbols/, files/, and behaviors/ directories.
+        Delete pages whose YAML frontmatter matches any path in tombstoned_files.
+        Never touches changes/ or blackboard/.
+        """
+        if not tombstoned_files:
+            return
+            
+        tombstone_set = set(tombstoned_files)
+        dirs_to_prune = ["symbols", "files", "behaviors"]
+        
+        for d in dirs_to_prune:
+            target_dir = os.path.join(self.vault_path, d)
+            if not os.path.exists(target_dir):
+                continue
+                
+            for file in os.listdir(target_dir):
+                if not file.endswith(".md"):
+                    continue
+                filepath = os.path.join(target_dir, file)
+                
+                try:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        lines = f.readlines()
+                    
+                    doc_type = None
+                    file_val = None
+                    
+                    if lines and lines[0].strip() == "---":
+                        yaml_lines = []
+                        for line in lines[1:]:
+                            if line.strip() == "---":
+                                break
+                            yaml_lines.append(line)
+                        
+                        for y_line in yaml_lines:
+                            if ":" in y_line:
+                                k, v = y_line.split(":", 1)
+                                k_clean = k.strip()
+                                v_clean = v.strip().strip("'\" ")
+                                if k_clean == "type":
+                                    doc_type = v_clean
+                                elif k_clean in ("file", "file_path", "entrypoint"):
+                                    file_val = v_clean
+                                    
+                    # Reconcile path matching based on doc_type
+                    should_remove = False
+                    if doc_type == "symbol" and file_val in tombstone_set:
+                        should_remove = True
+                    elif doc_type == "file" and file_val in tombstone_set:
+                        should_remove = True
+                    elif doc_type == "behavior" and file_val:
+                        # Entrypoint looks like: "src/app.py:main"
+                        symbol_file = file_val.split(":")[0] if ":" in file_val else file_val
+                        if symbol_file in tombstone_set:
+                            should_remove = True
+                            
+                    if should_remove:
+                        logger.info(f"Pruning stale page {filepath} (file metadata: {file_val})")
+                        os.remove(filepath)
+                except Exception as e:
+                    logger.warning(f"Failed to inspect/prune page {filepath}: {e}")
