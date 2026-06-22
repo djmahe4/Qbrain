@@ -2,7 +2,7 @@ import typer
 import os
 import sys
 import json
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from rich.console import Console
 from brain.config import Config
 from brain.indexer import Indexer
@@ -154,9 +154,38 @@ def audit():
     config, indexer, _, _ = get_engine()
     audit_cmd.audit_vulnerabilities(config, indexer, console)
 
+def _build_static_taint_summary(context_notes: List[Dict[str, Any]]) -> str:
+    """Build a lightweight static taint summary when correlation is disabled."""
+    taint_lines = []
+    for note in context_notes:
+        content = note.get("content", "")
+        if "TAINTED" in content:
+            path = note.get("file_path", "")
+            base_name = os.path.basename(path)
+            
+            # Extract basic dataflow summary from metadata or a simple heuristic
+            meta = note.get("metadata") or {}
+            df = meta.get("dataflow_summary", "").strip()
+            if not df:
+                # Fallback to finding the first TAINTED line
+                for line in content.splitlines():
+                    if "TAINTED" in line:
+                        df = line.strip()
+                        break
+            if df:
+                taint_lines.append(f"- `{base_name}`: {df}")
+
+    if not taint_lines:
+        return "(no-correlate mode) Static taint summary: No TAINTED dataflows found in retrieved notes."
+    
+    res = "(no-correlate mode) Static taint summary from vault notes:\n" + "\n".join(taint_lines[:3])
+    return res
+
 @app.command()
 def brain(
     symbol_or_query: str = typer.Argument(..., help="Symbol name, general query, or ADR command"),
+    repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Path to the repository to load config from"),
+    snippet: Optional[str] = typer.Option(None, "--snippet", "-s", help="Code snippet for live dataflow analysis"),
     diff: bool = typer.Option(False, "--diff", "-d", help="Analyze recent semantic branch differences as context"),
     adr: Optional[str] = typer.Option(None, "--adr", help="Perform ADR action: list, create, get, update"),
     adr_title: Optional[str] = typer.Option(None, "--adr-title", help="ADR Title (for create)"),
@@ -173,7 +202,7 @@ def brain(
     from brain.branch_diff import BranchDiff
     from brain.slm import QBrainSLM
 
-    config, indexer, embedder, scorer, store, cem, san, cognitive, api = get_cognitive_engine()
+    config, indexer, embedder, scorer, store, cem, san, cognitive, api = get_cognitive_engine(repo_path=repo)
 
     
     # 1. Check if it is a pure ADR operation
@@ -252,10 +281,13 @@ def brain(
                 librarian.export_blackboard_note(drift_events, pairs)
         except Exception as e:
             console.print(f"[yellow]Correlation pass skipped: {e}[/yellow]")
+            correlation_context = _build_static_taint_summary(context_notes)
+    else:
+        correlation_context = _build_static_taint_summary(context_notes)
 
     # 3. Call local SLM with unified prompt
     slm = QBrainSLM(config, retriever, adr_list, semantic_diff)
-    response = slm.generate(symbol_or_query, context_notes, correlation_context=correlation_context)
+    response = slm.generate(symbol_or_query, context_notes, correlation_context=correlation_context, code_snippet=snippet)
     
     console.print("[bold cyan]qbrain SLM Cognitive Summary:[/bold cyan]")
     # Stream/print output

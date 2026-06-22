@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Dict, Any, List, Optional
 from brain.rule_loader import RuleLoader
 
@@ -20,6 +21,46 @@ def truncate_context_aware(text: str, max_chars: int = 500) -> str:
         return text[:last_space] + " ... [truncated for context limits]"
     return sliced + "..."
 
+def _extract_multi_section(content: str) -> str:
+    target_headers = {
+        "## Semantic Context", 
+        "## Entanglements", 
+        "## Dynamic Variable Tracking", 
+        "## Assumed Environmental Context"
+    }
+    extracted_blocks = []
+    lines = content.splitlines()
+    current_header = None
+    current_block = []
+
+    def flush_block():
+        if current_header and any(current_header.startswith(th) for th in target_headers):
+            if current_header.startswith("## Dynamic Variable Tracking"):
+                # keep header + table header + first row
+                table_lines = [l for l in current_block if l.strip().startswith("|")]
+                if len(table_lines) >= 3:
+                    extracted_blocks.append(current_header + "\n" + "\n".join(table_lines[:3]))
+            else:
+                extracted_blocks.append(current_header + "\n" + "\n".join(current_block[:4]))
+
+    for line in lines:
+        if line.startswith("## "):
+            flush_block()
+            current_header = line.strip()
+            current_block = []
+        elif current_header:
+            if line.strip() and not line.strip().startswith("---"):
+                current_block.append(line)
+    flush_block()
+
+    res = "\n\n".join(extracted_blocks)
+    if not res:
+        # Fallback to first non-empty line
+        for line in lines:
+            if line.strip() and not line.startswith("#") and not line.startswith("---"):
+                return line.strip()
+    return res
+
 class QBrainSLM:
     """
     Local SLM Runtime for QBrain.
@@ -34,13 +75,10 @@ class QBrainSLM:
         self.rule_loader = RuleLoader(config)
         self.rules_context = self.rule_loader.get_consolidated_rules_context()
 
-    def generate(self, symbol_or_query: str, context_notes: List[Dict[str, Any]], correlation_context: Optional[str] = None) -> str:
+    def generate(self, symbol_or_query: str, context_notes: List[Dict[str, Any]], correlation_context: Optional[str] = None, code_snippet: Optional[str] = None) -> str:
         """
         Generates summary/insights using context notes, diffs, rules, and ADRs.
         """
-        # Construct a beautiful analytical response based on the compiled context
-
-        # This provides a deterministic, highly intelligent offline SLM analysis.
         response = []
         response.append(f"# QBrain Cognitive Analysis for: `{symbol_or_query}`\n")
         
@@ -48,20 +86,17 @@ class QBrainSLM:
         if context_notes:
             response.append("## 🔍 Codebase Knowledge (RAG)")
             for note in context_notes[:3]:
-                path = note.get('file_path')
+                path = note.get('file_path', '')
                 meta = note.get('metadata') or {}
                 arch = meta.get('archetype', 'unknown')
                 sim = note.get('similarity', 0.0)
                 response.append(f"- **[{os.path.basename(path)}]({path})** (Archetype: `{arch}`, Similarity: `{sim:.4f}`)")
-                # Extract first paragraph or short snippet
-                lines = note.get("content", "").splitlines()
-                summary_snippet = ""
-                for line in lines:
-                    if line.strip() and not line.startswith("#") and not line.startswith("---"):
-                        summary_snippet = line.strip()
-                        break
-                if summary_snippet:
-                    response.append(f"  * {summary_snippet[:150]}...")
+                
+                extracted_text = _extract_multi_section(note.get("content", ""))
+                truncated = truncate_context_aware(extracted_text, max_chars=400)
+                if truncated:
+                    for line in truncated.splitlines():
+                        response.append(f"  > {line}")
             response.append("")
 
         # Analyze Branch Diffs
@@ -82,17 +117,79 @@ class QBrainSLM:
                     response.append(f"  {line}")
             response.append("")
 
+        # Live Dataflow Analysis (Step 5)
+        if code_snippet and self.config.language.lower() == "php":
+            try:
+                from brain.dataflow_engine import DataFlowEngine
+                df_res = DataFlowEngine().analyze_snippet(code_snippet, "php")
+                response.append("## 🔬 Live Dataflow Analysis")
+                var_states = df_res.get("variable_states", {})
+                tainted = [v for v, data in var_states.items() if data.get("state") == "TAINTED"]
+                flow_paths = df_res.get("flow_paths", [])
+                
+                if tainted:
+                    response.append(f"- **Tainted Variables Found**: {', '.join(tainted)}")
+                if flow_paths:
+                    for p in flow_paths:
+                        response.append(f"- **Flow Path**: {p.get('source')} → {p.get('variable')} → {p.get('sink')} (Length: {df_res.get('path_length', len(tainted))})")
+                response.append("")
+            except Exception as e:
+                response.append(f"## 🔬 Live Dataflow Analysis\n- Error analyzing snippet: {str(e)}\n")
+
+        # Analyze Quantum Correlations (Reformatted as Markdown Table)
+        if correlation_context:
+            response.append("## 🔀 Semantic Correlations")
+            if "Static taint summary" in correlation_context:
+                response.append(correlation_context)
+            else:
+                response.append("| Symbol | Comment Match | Score | Flip | Decoherence |")
+                response.append("|---|---|---|---|---|")
+                for line in correlation_context.splitlines():
+                    # Format: - Comment in file.py:12 entangled with func_name (cosine: 0.85) [FLIP (...), DECOHERENCE]
+                    match = re.search(r'- Comment in (.*?) entangled with (.*?) \(cosine: (.*?)\)(?: \[(.*?)\])?', line)
+                    if match:
+                        file_loc, symbol, score, statuses = match.groups()
+                        statuses = statuses or ""
+                        flip = "Yes" if "FLIP" in statuses else "No"
+                        decoherence = "Yes" if "DECOHERENCE" in statuses else "No"
+                        response.append(f"| `{symbol}` | `{file_loc}` | `{score}` | {flip} | {decoherence} |")
+                    else:
+                        response.append(line)
+            response.append("")
+
         # Synthesis/Decision Box
         response.append("## 💡 Cognitive Synthesis & Insights")
         
-        # Simple heuristic check for vulnerability-related queries
         q_lower = symbol_or_query.lower()
         if "vuln" in q_lower or "security" in q_lower or "sql" in q_lower or "xss" in q_lower:
             response.append("> [!IMPORTANT]")
             response.append("> **Security Posture Assessment**:")
             response.append("> The query indicates an analysis of potential vulnerabilities or security boundaries.")
-            response.append("> - Check matching privilege boundaries and rules in `vulnerabilities.md`.")
-            response.append("> - Confirm that data flow inputs are sanitized before reaching database or command sinks.")
+            
+            for note in context_notes:
+                meta = note.get('metadata') or {}
+                # Behaviors -> sec level and taint
+                sec_level = meta.get("security_level")
+                dataflow = meta.get("dataflow_summary")
+                # Symbols -> callers
+                entanglements = meta.get("entanglement_count")
+                
+                evidence = []
+                path = note.get('file_path', '')
+                base_name = os.path.basename(path).replace(".md", "")
+                
+                if "behaviors" in path:
+                    if sec_level:
+                        evidence.append(f"constraint `{sec_level}`")
+                    if dataflow:
+                        # try to extract source/sink or just the row
+                        evidence.append(f"dataflow state `{dataflow.strip()}`")
+                elif "symbols" in path and entanglements:
+                    evidence.append(f"`{entanglements}` entangled callers")
+                
+                if evidence:
+                    response.append(f"> - **{base_name}** — {', '.join(evidence)}.")
+                    
         elif "token" in q_lower or "auth" in q_lower or "session" in q_lower:
             response.append("> [!NOTE]")
             response.append("> **Authentication and Authorization flow**:")
@@ -101,11 +198,5 @@ class QBrainSLM:
         else:
             response.append(f"To query the codebase for `{symbol_or_query}`, QBrain loaded {len(context_notes)} matching vault notes.")
             response.append("All structural dependencies and physics metrics have been synthesized in the local graph index.")
-
-        # Analyze Quantum Correlations if context is passed
-        if correlation_context:
-            response.append("## 🔀 Semantic Correlations")
-            response.append(correlation_context)
-            response.append("")
 
         return "\n".join(response)

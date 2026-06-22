@@ -37,6 +37,47 @@ class VaultRetriever:
                 metadata["archetype"] = arch_match.group(1).lower()
         return metadata
 
+    def _extract_enriched_fields(self, rel_path: str, content: str) -> Dict[str, Any]:
+        """Extract dataflow_summary, security_level, entanglement_count, and note_type from content."""
+        # 1. dataflow_summary: first TAINTED row from Dynamic Variable Tracking table
+        dataflow_summary = ""
+        for line in content.splitlines():
+            if "TAINTED" in line and line.strip().startswith("|") and not "Variable" in line and not "---" in line:
+                dataflow_summary = line.strip()
+                break
+
+        # 2. security_level: value from Assumed Environmental Context or content
+        security_level = None
+        env_match = re.search(r"##+\s*Assumed Environmental Context\s*\n(.*?)(?=\n##+|\Z)", content, re.DOTALL | re.IGNORECASE)
+        search_text = env_match.group(1) if env_match else content
+        sec_level_match = re.search(r"==\s*['\"]([^'\"]+)['\"]", search_text)
+        if sec_level_match:
+            security_level = sec_level_match.group(1)
+
+        # 3. entanglement_count: count of Inbound Callers listed in Entanglements
+        entanglement_count = 0
+        callers_match = re.search(r"### Inbound Callers\s*\n(.*?)(?:###|\Z)", content, re.DOTALL | re.IGNORECASE)
+        if callers_match:
+            entanglement_count = len(re.findall(r"-\s*\[\[", callers_match.group(1)))
+
+        # 4. note_type
+        folder = rel_path.split("/")[0] if "/" in rel_path else "unknown"
+        note_type_map = {
+            "symbols": "symbol",
+            "behaviors": "behavior",
+            "files": "file",
+            "narratives": "narrative",
+            "rules": "rule"
+        }
+        note_type = note_type_map.get(folder, folder)
+
+        return {
+            "dataflow_summary": dataflow_summary,
+            "security_level": security_level,
+            "entanglement_count": entanglement_count,
+            "note_type": note_type
+        }
+
     def build_index(self, force: bool = False) -> List[Dict[str, Any]]:
         """Indexes all markdown files in the obsidian vault."""
         os.makedirs(self.index_dir, exist_ok=True)
@@ -47,12 +88,16 @@ class VaultRetriever:
                 with open(self.index_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     for item in data:
+                        if "dataflow_summary" not in item:
+                            enriched = self._extract_enriched_fields(item["file_path"], item.get("content", ""))
+                            item.update(enriched)
                         existing_index[item["file_path"]] = item
             except Exception:
                 pass
                 
         updated_items = []
         has_changes = False
+        stale_files = []
         
         # Scan vault folders
         subdirs = ["files", "symbols", "behaviors", "narratives", "rules"]
@@ -71,21 +116,37 @@ class VaultRetriever:
                         if rel_path in existing_index and existing_index[rel_path].get("mtime") == mtime:
                             updated_items.append(existing_index[rel_path])
                         else:
-                            try:
-                                with open(filepath, "r", encoding="utf-8", errors="ignore") as file_handle:
-                                    content = file_handle.read()
-                                metadata = self._extract_metadata(filepath, content)
-                                embedding = self.embedder.embed(content).tolist()
-                                updated_items.append({
-                                    "file_path": rel_path,
-                                    "content": content,
-                                    "metadata": metadata,
-                                    "mtime": mtime,
-                                    "embedding": embedding
-                                })
-                                has_changes = True
-                            except Exception:
-                                pass
+                            stale_files.append((filepath, rel_path, mtime))
+                            
+        if len(stale_files) > 50 and not force and existing_index:
+            # Too many stale files. To avoid a huge synchronous hit (e.g. during tests),
+            # we just return the existing index and defer the background build.
+            import threading
+            def _bg_rebuild():
+                self.build_index(force=True)
+            threading.Thread(target=_bg_rebuild, daemon=True).start()
+            return list(existing_index.values())
+
+        for filepath, rel_path, mtime in stale_files:
+            try:
+                with open(filepath, "r", encoding="utf-8", errors="ignore") as file_handle:
+                    content = file_handle.read()
+                metadata = self._extract_metadata(filepath, content)
+                embedding = self.embedder.embed(content).tolist()
+                enriched = self._extract_enriched_fields(rel_path, content)
+                
+                item = {
+                    "file_path": rel_path,
+                    "content": content,
+                    "metadata": metadata,
+                    "mtime": mtime,
+                    "embedding": embedding
+                }
+                item.update(enriched)
+                updated_items.append(item)
+                has_changes = True
+            except Exception:
+                pass
                                 
         if has_changes or len(updated_items) != len(existing_index):
             with open(self.index_file, "w", encoding="utf-8") as f:
@@ -100,6 +161,9 @@ class VaultRetriever:
             
         # Embed query
         query_vector = self.embedder.embed(query)
+        
+        # Tokenize query for lexical overlap
+        query_tokens = set(re.findall(r"\w+", query.lower()))
         
         results = []
         for item in items:
@@ -118,11 +182,30 @@ class VaultRetriever:
             # Similarity
             item_vector = np.array(item["embedding"])
             similarity = self.embedder.cosine_similarity(query_vector, item_vector)
+            
+            # Simple lexical boost
+            boost = 0.0
+            filename_lower = os.path.basename(item["file_path"]).lower()
+            content_lower = item["content"].lower()
+            for token in query_tokens:
+                if len(token) < 3:
+                    continue
+                if token in filename_lower:
+                    boost += 0.08
+                elif token in content_lower:
+                    boost += 0.02
+            
+            final_score = similarity + boost
+            
             results.append({
                 "file_path": item["file_path"],
                 "content": item["content"],
                 "metadata": item["metadata"],
-                "similarity": similarity
+                "similarity": final_score,
+                "dataflow_summary": item.get("dataflow_summary", ""),
+                "security_level": item.get("security_level", None),
+                "entanglement_count": item.get("entanglement_count", 0),
+                "note_type": item.get("note_type", "unknown")
             })
             
         # Sort by similarity descending
