@@ -12,7 +12,15 @@ class Embedder:
         if Embedder._model is None:
             # Lazy load sentence-transformers to speed up startup times when not embedding
             try:
-                Embedder._model = SentenceTransformer(self.model_name)
+                import os
+                import platform
+                if platform.system() == "Windows":
+                    user_profile = os.environ.get("USERPROFILE", "C:\\Users\\mahes")
+                    cache_dir = os.path.join(user_profile, ".qbrain_models")
+                else:
+                    cache_dir = os.path.expanduser("~/.qbrain_models")
+                os.makedirs(cache_dir, exist_ok=True)
+                Embedder._model = SentenceTransformer(self.model_name, cache_folder=cache_dir)
             except ImportError as e:
                 raise ImportError(
                     "sentence-transformers is not installed. Please install it to use semantic embedding features."

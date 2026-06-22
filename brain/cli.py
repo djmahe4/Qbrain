@@ -155,12 +155,67 @@ def audit():
     audit_cmd.audit_vulnerabilities(config, indexer, console)
 
 @app.command()
-def brain(symbol: str = typer.Argument(..., help="Symbol name to query the cognitive model for")):
-    """Query the qbrain cognitive model for a specific symbol's intent and causal impact."""
-    _, _, _, _, _, _, _, _, api = get_cognitive_engine()
-    summary = api.generate_prose_summary(symbol)
-    console.print(f"[bold cyan]qbrain Narrative API Output:[/bold cyan]")
-    console.print(summary)
+def brain(
+    symbol_or_query: str = typer.Argument(..., help="Symbol name, general query, or ADR command"),
+    diff: bool = typer.Option(False, "--diff", "-d", help="Analyze recent semantic branch differences as context"),
+    adr: Optional[str] = typer.Option(None, "--adr", help="Perform ADR action: list, create, get, update"),
+    adr_title: Optional[str] = typer.Option(None, "--adr-title", help="ADR Title (for create)"),
+    adr_content: Optional[str] = typer.Option(None, "--adr-content", help="ADR Content (for create/update)"),
+    adr_id: Optional[str] = typer.Option(None, "--adr-id", help="ADR ID (for get/update)"),
+    adr_status: Optional[str] = typer.Option(None, "--adr-status", help="ADR Status (for create/update)")
+):
+    """
+    Query the qbrain cognitive model & local SLM.
+    Handles semantic query answering, branch diff reasoning, and ADR tracking.
+    """
+    from brain.rag.retriever import VaultRetriever
+    from brain.branch_diff import BranchDiff
+    from brain.slm import QBrainSLM
+
+    config, indexer, embedder, scorer, store, cem, san, cognitive, api = get_cognitive_engine()
+    
+    # 1. Check if it is a pure ADR operation
+    if adr:
+        res = indexer.manage_adr(
+            action=adr, adr_id=adr_id, title=adr_title, 
+            status=adr_status, content=adr_content
+        )
+        console.print("[bold green]ADR Action Result:[/bold green]")
+        console.print(res)
+        return
+
+    # 2. Gather context
+    context_notes = []
+    semantic_diff = None
+    
+    # RAG lookup
+    try:
+        retriever = VaultRetriever(config, embedder)
+        context_notes = retriever.retrieve(symbol_or_query, top_k=5)
+    except Exception:
+        pass
+
+    # Diff lookup
+    if diff:
+        try:
+            diff_tool = BranchDiff(config, embedder)
+            semantic_diff = diff_tool.compare_branches("HEAD", config.branch_diff_config.get("base_branch", "main"))
+        except Exception:
+            pass
+
+    # ADR Context
+    try:
+        adr_list = indexer.manage_adr("get")
+    except Exception:
+        adr_list = {}
+
+    # 3. Call local SLM with unified prompt
+    slm = QBrainSLM(config, retriever, adr_list, semantic_diff)
+    response = slm.generate(symbol_or_query, context_notes)
+    
+    console.print("[bold cyan]qbrain SLM Cognitive Summary:[/bold cyan]")
+    # Stream/print output
+    console.print(response)
 
 @app.command()
 def sleep():

@@ -84,12 +84,42 @@ class PersistenceManager:
                 PRIMARY KEY(project, source, target, type)
             )
         """)
+
+        # File-level snapshot for Tier 2 drift detection
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS manifest (
+                project     TEXT,
+                file_path   TEXT,
+                mtime       REAL,
+                size_bytes  INTEGER,
+                last_synced REAL,
+                PRIMARY KEY (project, file_path)
+            )
+        """)
+
+        # Per-symbol confidence score (drives tiered export)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS symbol_confidence (
+                project          TEXT,
+                symbol           TEXT,
+                confidence_score REAL,
+                tier             TEXT,
+                last_computed    REAL,
+                PRIMARY KEY (project, symbol)
+            )
+        """)
         
         # Migration: Add potential_energy column if it doesn't exist
         try:
             cursor.execute("ALTER TABLE beliefs ADD COLUMN potential_energy REAL DEFAULT 0.0")
         except sqlite3.OperationalError:
             pass # already exists
+
+        # Enable WAL mode for concurrency
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL;")
+        except Exception:
+            pass
 
         conn.commit()
         conn.close()
@@ -229,3 +259,78 @@ class PersistenceManager:
             }
         conn.close()
         return results
+
+    def save_manifest_snapshot(self, files: Dict[str, tuple]):
+        """Batch upsert current file metadata into the manifest table."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        now = time.time()
+        data = [
+            (self.project_id, path, stats[0], stats[1], now)
+            for path, stats in files.items()
+        ]
+        cursor.executemany("""
+            INSERT OR REPLACE INTO manifest (project, file_path, mtime, size_bytes, last_synced)
+            VALUES (?, ?, ?, ?, ?)
+        """, data)
+        conn.commit()
+        conn.close()
+
+    def load_manifest(self) -> Dict[str, tuple]:
+        """Load manifest from SQLite database as {file_path: (mtime, size_bytes)}."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT file_path, mtime, size_bytes FROM manifest 
+            WHERE project = ? AND last_synced != -1
+        """, (self.project_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return {r[0]: (r[1], r[2]) for r in rows}
+
+    def mark_tombstone(self, file_path: str):
+        """Mark a file path as tombstoned (last_synced = -1)."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO manifest (project, file_path, mtime, size_bytes, last_synced)
+            VALUES (?, ?, 0.0, 0, -1)
+            ON CONFLICT(project, file_path) DO UPDATE SET last_synced = -1
+        """, (self.project_id, file_path))
+        conn.commit()
+        conn.close()
+
+    def get_tombstones(self) -> List[str]:
+        """Get all file paths marked as tombstoned."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT file_path FROM manifest 
+            WHERE project = ? AND last_synced = -1
+        """, (self.project_id,))
+        rows = cursor.fetchall()
+        conn.close()
+        return [r[0] for r in rows]
+
+    def save_symbol_confidence(self, symbol: str, score: float, tier: str):
+        """Save a symbol's confidence score and calculated export tier."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO symbol_confidence (project, symbol, confidence_score, tier, last_computed)
+            VALUES (?, ?, ?, ?, ?)
+        """, (self.project_id, symbol, score, tier, time.time()))
+        conn.commit()
+        conn.close()
+
+    def get_symbol_confidence(self, symbol: str) -> Optional[float]:
+        """Get the confidence score of a symbol, if set."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT confidence_score FROM symbol_confidence 
+            WHERE project = ? AND symbol = ?
+        """, (self.project_id, symbol))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row else None

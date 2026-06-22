@@ -32,6 +32,8 @@ class Indexer:
 
     def _get_project_name(self) -> str:
         """Resolve the project name for the current repository."""
+        if getattr(self, "_project_name", None):
+            return self._project_name
         name = getattr(self.config, "project_name", "default-project")
         if not isinstance(name, str):
             return "default-project"
@@ -249,3 +251,34 @@ class Indexer:
             return json.loads(res)
         except json.JSONDecodeError:
             return {"path": []}
+
+    def manage_adr(
+        self, 
+        action: str, 
+        adr_id: Optional[str] = None, 
+        title: Optional[str] = None, 
+        status: Optional[str] = None, 
+        content: Optional[str] = None, 
+        project: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Interfaces with codebase-memory-mcp's manage_adr tool.
+        """
+        p_name = project or self._get_project_name()
+        # Map action to mode for compatibility with Go binary
+        mode_val = "update" if action in ("create", "update") else "get"
+        args = {"action": action, "mode": mode_val, "project": p_name}
+        if adr_id:
+            args["adr_id"] = adr_id
+        if title:
+            args["title"] = title
+        if status:
+            args["status"] = status
+        if content:
+            args["content"] = content
+            
+        res = self._run_cli("manage_adr", args)
+        try:
+            return json.loads(res)
+        except json.JSONDecodeError:
+            return {"raw_result": res}
