@@ -29,6 +29,7 @@ CWE_SINK_MAP: Dict[str, tuple] = {
     "setcookie":         ("CWE-614", "Sensitive Cookie — Tainted value in setcookie()"),
     "log":               ("CWE-532", "Sensitive Info in Logs — Tainted variable written to log"),
     "error_log":         ("CWE-532", "Sensitive Info in Logs — Tainted variable in error_log()"),
+    "move_uploaded_file":("CWE-434", "Unrestricted File Upload — Tainted destination path in move_uploaded_file()"),
 }
 
 # Maps language_parser warning substrings → (CWE, severity)

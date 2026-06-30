@@ -15,9 +15,15 @@ class DataFlowEngine:
     }
     
     SANITIZERS = {
-        "php": [r"htmlspecialchars", r"htmlentities", r"mysqli_real_escape_string", r"strip_tags", r"filter_var", r"intval", r"floatval"],
+        "php": [r"htmlspecialchars", r"htmlentities", r"strip_tags", r"filter_var", r"intval", r"floatval", r"md5", r"sha1", r"hash", r"crypt", r"password_hash"],
         "python": [r"escape\(", r"bleach\.clean", r"markupsafe\.escape"],
         "javascript": [r"validator\.escape", r"dompurify\.sanitize"]
+    }
+    
+    QUOTE_ESCAPERS = {
+        "php": [r"mysqli_real_escape_string", r"addslashes", r"mysql_real_escape_string", r"sqlite_escape_string", r"db_escape_string"],
+        "python": [],
+        "javascript": []
     }
     
     SINKS = {
@@ -40,6 +46,13 @@ class DataFlowEngine:
         if v.replace(".", "", 1).isdigit():
             return "number"
         return "dynamic"
+
+    def _is_variable_quoted_in_query(self, var: str, query: str) -> bool:
+        """Checks if a variable is enclosed in single or double quotes within the query string."""
+        escaped_var = re.escape(var)
+        # Matches '$var', '{$var}', or \"$var\", \"{$var}\"
+        pattern = rf"(?:'{{?{escaped_var}}}?')|(?:\\\"{{?{escaped_var}}}?\\\"?)"
+        return bool(re.search(pattern, query))
 
     def analyze_snippet(self, code: str, language: str, registry: Any = None, file_path: str = "unknown", redirectors: List[str] = None) -> Dict[str, Any]:
         """
@@ -261,6 +274,7 @@ class DataFlowEngine:
                 source = var_states[base_var]["source"]
                 is_tainted = any(s in val_raw or s in val_raw.lower() for s in ["$_GET", "$_POST", "$_REQUEST", "$_COOKIE", "$_SERVER", "external_input"])
                 is_sanitized = any(re.search(san, val_raw, re.IGNORECASE) for san in self.SANITIZERS.get(lang, []))
+                is_escaped = any(re.search(esc, val_raw, re.IGNORECASE) for esc in getattr(self, "QUOTE_ESCAPERS", {}).get(lang, []))
                 
                 if is_tainted:
                     state = "TAINTED"
@@ -276,7 +290,10 @@ class DataFlowEngine:
                     if not is_const_literal:
                         state = "DYNAMIC" 
                         source = "internal"
-                if is_sanitized: state = "SAFE"
+                if is_sanitized: 
+                    state = "SAFE"
+                elif is_escaped:
+                    state = "ESCAPED"
                     
                 # Property-specific taint propagation logic
                 prop_state = None
@@ -305,6 +322,12 @@ class DataFlowEngine:
                     if prop_state == "TAINTED" and state != "SAFE":
                         state = "TAINTED"
                         source = prop_source or "external"
+                    elif prop_state == "ESCAPED":
+                        if not self._is_variable_quoted_in_query(prop_name, val_raw):
+                            state = "TAINTED"
+                            source = prop_source or "external"
+                        else:
+                            state = "SAFE"
                     elif prop_state == "SAFE":
                         state = "SAFE"
                 else:
@@ -314,10 +337,17 @@ class DataFlowEngine:
                         escaped_var = re.escape(existing_var)
                         pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
                         if re.search(pattern, val_raw):
-                            if existing_data.get("state") == "TAINTED" and state != "SAFE":
+                            existing_state = existing_data.get("state")
+                            if existing_state == "TAINTED" and state != "SAFE":
                                 state = "TAINTED"
                                 source = existing_data.get("source", "external")
-                            elif existing_data.get("state") == "SAFE":
+                            elif existing_state == "ESCAPED":
+                                if not self._is_variable_quoted_in_query(existing_var, val_raw):
+                                    state = "TAINTED"
+                                    source = existing_data.get("source", "external")
+                                else:
+                                    state = "SAFE"
+                            elif existing_state == "SAFE":
                                 state = "SAFE"
                 
                 if base_var == var_raw:
@@ -421,15 +451,27 @@ class DataFlowEngine:
                     escaped_var = re.escape(var_name)
                     pattern = fr"(?<![\w\$]){escaped_var}(?![\w\$])"
                     if re.search(pattern, args):
-                        if data.get("state") != "CONSTANT":
+                        var_state = data.get("state", "unknown")
+                        source = data.get("source", "unknown")
+                        
+                        # Quote-escape check for SQL sinks
+                        if var_state == "ESCAPED":
+                            is_sql_sink = any(s in (sink_name or "").lower() for s in ["query", "prepare", "execute", "select", "insert", "update", "delete"])
+                            if is_sql_sink:
+                                if not self._is_variable_quoted_in_query(var_name, args):
+                                    var_state = "TAINTED"
+                                else:
+                                    var_state = "SAFE"
+                        
+                        if var_state != "CONSTANT":
                             choices = data.get("choices", [])
                             if not choices:
                                 path = {
-                                    "source": data.get("source", "unknown"),
+                                    "source": source,
                                     "sink": sink_name,
                                     "args": args,
                                     "variable": var_name,
-                                    "state": data.get("state", "unknown"),
+                                    "state": var_state,
                                     "type": data.get("type", "unknown"),
                                     "file_path": file_path,
                                     "line": line,
@@ -439,6 +481,15 @@ class DataFlowEngine:
                                     paths.append(path)
                             else:
                                 for choice in choices:
+                                    c_state = choice.get("state", "unknown")
+                                    if c_state == "ESCAPED":
+                                        is_sql_sink = any(s in (sink_name or "").lower() for s in ["query", "prepare", "execute", "select", "insert", "update", "delete"])
+                                        if is_sql_sink:
+                                            if not self._is_variable_quoted_in_query(var_name, args):
+                                                c_state = "TAINTED"
+                                            else:
+                                                c_state = "SAFE"
+                                                
                                     combined_constraints = list(set(choice.get("constraints", []) + curr_active_constraints))
                                     # Filter obvious mutually exclusive security levels
                                     is_incompatible = False
@@ -456,11 +507,11 @@ class DataFlowEngine:
                                         continue
                                         
                                     path = {
-                                        "source": choice.get("source", data.get("source", "unknown")),
+                                        "source": choice.get("source", source),
                                         "sink": sink_name,
                                         "args": args,
                                         "variable": var_name,
-                                        "state": choice.get("state", data.get("state", "unknown")),
+                                        "state": c_state,
                                         "type": data.get("type", "unknown"),
                                         "file_path": file_path,
                                         "line": line,

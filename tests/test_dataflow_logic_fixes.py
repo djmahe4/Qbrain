@@ -61,11 +61,70 @@ def test_contextual_sinks():
     assert "$id == 'admin'" in if_paths[0]["sink"]
     assert if_paths[0]["variable"] == "$id"
 
+def test_quote_escaping_sql_injection():
+    """Verify that quote escaping sanitizes only when quoted in query."""
+    df_engine = DataFlowEngine()
+    
+    # Case A: Unquoted integer (Vulnerable)
+    code_unquoted = """
+    $id = mysqli_real_escape_string($conn, $_GET['id']);
+    $query = "SELECT * FROM users WHERE id = $id";
+    mysqli_query($conn, $query);
+    """
+    res_unquoted = df_engine.analyze_snippet(code_unquoted, "php")
+    paths_unquoted = res_unquoted["flow_paths"]
+    query_paths = [p for p in paths_unquoted if p["variable"] == "$query" and p["sink"] == "mysqli_query"]
+    assert len(query_paths) > 0
+    assert query_paths[0]["state"] == "TAINTED"
+
+    # Case B: Quoted string (Secure)
+    code_quoted = """
+    $id = mysqli_real_escape_string($conn, $_GET['id']);
+    $query = "SELECT * FROM users WHERE id = '$id'";
+    mysqli_query($conn, $query);
+    """
+    res_quoted = df_engine.analyze_snippet(code_quoted, "php")
+    paths_quoted = res_quoted["flow_paths"]
+    query_paths_quoted = [p for p in paths_quoted if p["variable"] == "$query" and p["sink"] == "mysqli_query"]
+    assert len(query_paths_quoted) > 0
+    assert query_paths_quoted[0]["state"] == "SAFE"
+
+def test_cryptographic_hashing_sanitization():
+    """Verify that md5/sha1 hashing sanitizes the taint."""
+    df_engine = DataFlowEngine()
+    code = """
+    $pass = $_GET['pass'];
+    $hashed = md5($pass);
+    $query = "SELECT * FROM users WHERE password = '$hashed'";
+    mysqli_query($conn, $query);
+    """
+    res = df_engine.analyze_snippet(code, "php")
+    assert res["variable_states"]["$hashed"]["state"] == "SAFE"
+
+def test_nested_and_recursive_dataflow():
+    """Verify that taint propagates recursively through nested assignments."""
+    df_engine = DataFlowEngine()
+    code = """
+    $a = $_GET['id'];
+    $b = $a;
+    $c = $b;
+    $query = "SELECT * FROM users WHERE id = $c";
+    mysqli_query($conn, $query);
+    """
+    res = df_engine.analyze_snippet(code, "php")
+    paths = res["flow_paths"]
+    query_paths = [p for p in paths if p["variable"] == "$query" and p["sink"] == "mysqli_query"]
+    assert len(query_paths) > 0
+    assert query_paths[0]["state"] == "TAINTED"
+
 if __name__ == "__main__":
     try:
         test_dataflow_source_attribution()
         test_dataflow_inheritance_boundaries()
         test_contextual_sinks()
+        test_quote_escaping_sql_injection()
+        test_cryptographic_hashing_sanitization()
+        test_nested_and_recursive_dataflow()
         print("Tests finished successfully!")
     except Exception as e:
         print(f"Test failed: {e}")

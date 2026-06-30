@@ -252,3 +252,44 @@ def test_librarian_enrichment_export_file(tmp_path):
     assert "[[#Symbol: calculateTrajectory\\|calculateTrajectory]]" in content
     assert "[[#Symbol: simulateOrbit\\|simulateOrbit]]" in content
 
+
+def test_librarian_enrichment_export_prerequisites(tmp_path):
+    vault_path = tmp_path / "obsidian_vault"
+    engine = LibrarianEngine(str(tmp_path), str(vault_path))
+    engine.setup_vault()
+
+    # Create one dummy file note in files/ so it exists
+    os.makedirs(vault_path / "files", exist_ok=True)
+    with open(vault_path / "files" / "setup_php.md", "w", encoding="utf-8") as f:
+        f.write("# Setup")
+
+    class MockRegistry:
+        def __init__(self):
+            self.constants = {"DB_PASSWORD": "secret_password"}
+        def get_origin(self, name):
+            return "setup.php"
+
+    setup_files = [str(tmp_path / "setup.php"), str(tmp_path / "config.inc.php.dist")]
+    # Create the physical files in tmp_path
+    with open(tmp_path / "setup.php", "w", encoding="utf-8") as f:
+        f.write("<?php")
+    with open(tmp_path / "config.inc.php.dist", "w", encoding="utf-8") as f:
+        f.write("<?php")
+
+    engine.export_prerequisites(setup_files, MockRegistry())
+
+    prereq_file = vault_path / "rules" / "prerequisites.md"
+    assert os.path.exists(prereq_file)
+
+    with open(prereq_file, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    # Check setup.php (which has a file note) is linked
+    assert "[[files/setup_php|setup.php]]" in content
+    # Check config.inc.php.dist (which does NOT have a file note) is NOT linked, but rendered as text
+    assert "`config.inc.php.dist`" in content
+    assert "[[files/config_config_inc_php_dist" not in content
+
+    # Check that backslash escaping is removed (no \| in links)
+    assert "\\|" not in content
+

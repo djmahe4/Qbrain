@@ -154,7 +154,7 @@ class SystemicAuditor:
             # If any tainted variable (inherited or local) reaches a dangerous sink
             all_tainted = tainted_vars.union(new_tainted)
             
-            dangerous_sinks = ["echo", "print", "query", "exec", "system", "shell_exec", "eval"]
+            dangerous_sinks = ["echo", "print", "query", "exec", "system", "shell_exec", "eval", "include", "require", "file_get_contents", "header", "setcookie"]
             
             for flow in local_flow:
                 if flow.get("variable") in all_tainted:

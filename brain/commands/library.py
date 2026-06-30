@@ -528,7 +528,8 @@ def sync_library(config, indexer, console, deep=False):
                             links.append(f"[[behaviors/{b_id}\\|{label}]]")
                         behavior_link = ", ".join(links)
                         
-                    ep_file.write(f"| `{ep_name}` | `[files/{ep_path_val}](file:///{os.path.join(repo_path, ep_path_val).replace('\\\\', '/')})` | {behavior_link} |\n")
+                    abs_ep_path = os.path.join(repo_path, ep_path_val or "").replace('\\', '/')
+                    ep_file.write(f"| `{ep_name}` | `[files/{ep_path_val}](file:///{abs_ep_path})` | {behavior_link} |\n")
                 ep_file.write("\n")
             try:
                 diff_tool = BranchDiff(config, Embedder())

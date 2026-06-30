@@ -1137,8 +1137,16 @@ class LibrarianEngine:
                 for sf in sorted(setup_files):
                     rel_sf = os.path.relpath(sf, self.repo_path).replace("\\", "/")
                     safe_sf = self._get_safe_filename(rel_sf)
-                    f.write(f"- **File**: [[files/{safe_sf}\\|{rel_sf}]]\n")
-                    f.write(f"  - **Behavior Model**: [[behaviors/{safe_sf}\\|View behavior model]]\n")
+                    file_exists = os.path.exists(os.path.join(self.vault_path, "files", f"{safe_sf}.md"))
+                    behavior_exists = os.path.exists(os.path.join(self.vault_path, "behaviors", f"{safe_sf}.md"))
+                    
+                    if file_exists:
+                        f.write(f"- **File**: [[files/{safe_sf}|{rel_sf}]]\n")
+                    else:
+                        f.write(f"- **File**: `{rel_sf}`\n")
+                        
+                    if behavior_exists:
+                        f.write(f"  - **Behavior Model**: [[behaviors/{safe_sf}|View behavior model]]\n")
             f.write("\n")
             
             f.write("## 2. Configuration Settings & Global Constants\n\n")
@@ -1151,9 +1159,14 @@ class LibrarianEngine:
                 for name, value in sorted(registry.constants.items()):
                     origin = registry.get_origin(name) or "unknown"
                     safe_origin = self._get_safe_filename(origin)
+                    origin_exists = os.path.exists(os.path.join(self.vault_path, "files", f"{safe_origin}.md"))
                     is_secret = any(s in name.lower() for s in ["pass", "secret", "key", "token"])
                     masked_val = "********" if is_secret and value else str(value)
-                    f.write(f"| `{name}` | `{masked_val}` | [[files/{safe_origin}\\|{origin}]] |\n")
+                    
+                    if origin_exists:
+                        f.write(f"| `{name}` | `{masked_val}` | [[files/{safe_origin}|{origin}]] |\n")
+                    else:
+                        f.write(f"| `{name}` | `{masked_val}` | `{origin}` |\n")
             f.write("\n")
             
             f.write("## 3. Third-Party Dependencies & Features\n\n")
