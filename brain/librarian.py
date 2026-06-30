@@ -549,16 +549,30 @@ class LibrarianEngine:
         return ", ".join(parts) if parts else ""
 
     def generate_behavior_model(self, entrypoint_func: str, entrypoint_path: str, calls_map: dict, funcs: List[dict], sym_meta: dict, scenario_constraints: List[str] = None, max_depth: int = 10, max_states: int = 50) -> dict:
+        """
+        Generates a behavioral flow model from an entrypoint using context-preserving DFS
+        and utility hub pruning. Preserves sequential execution order.
+        """
         states: set = {entrypoint_func}
         transitions = []
-        # Initialize queue with scenario constraints if provided to influence behavior split
+        
+        # 1. Identify utility hubs (functions with high fan-in) to prune traversal explosion
+        fan_in_counts = {}
+        for caller, data in calls_map.items():
+            for callee in data.get("callees", []):
+                fan_in_counts[callee] = fan_in_counts.get(callee, 0) + 1
+            for callee_det, _ in data.get("callees_detailed", []):
+                fan_in_counts[callee_det] = fan_in_counts.get(callee_det, 0) + 1
+
         initial_condition = " AND ".join(scenario_constraints) if scenario_constraints else None
-        queue = deque([(entrypoint_func, None, 0, initial_condition)]) # (current, caller, depth, condition)
+        # Stack elements: (current, caller, depth, condition)
+        stack = [(entrypoint_func, None, 0, initial_condition)]
         visited = set()
 
-        while queue:
-            if len(states) >= max_states: break
-            current, caller, depth, condition = queue.popleft()
+        while stack:
+            if len(states) >= max_states:
+                break
+            current, caller, depth, condition = stack.pop()
             
             # Resolve to fully qualified name if current is unqualified
             q_name = None
@@ -581,6 +595,10 @@ class LibrarianEngine:
                 })
                 states.add(current)
             
+            # Hub pruning: if a function is called by more than 8 different functions,
+            # we treat it as a utility leaf node and do not traverse deeper.
+            is_hub = fan_in_counts.get(lookup_key, 0) > 8
+            
             # Prune/ignore setup and config calls from other entrypoints
             is_setup_config = False
             symbol_file = sym_meta.get(lookup_key, {}).get("file") or (lookup_key if lookup_key.endswith(".php") or lookup_key.endswith(".php.dist") else None)
@@ -597,12 +615,16 @@ class LibrarianEngine:
                 if any(re.match(pattern, file_name, re.IGNORECASE) for pattern in setup_patterns):
                     is_setup_config = True
             
-            if is_setup_config:
+            if is_setup_config or is_hub:
                 continue
 
             if depth < max_depth:
                 if lookup_key not in visited:
                     visited.add(lookup_key)
+                    
+                    next_nodes = []
+                    
+                    # A. Call graph callees
                     detailed_next = calls_map.get(lookup_key, {}).get("callees_detailed", [])
                     if detailed_next:
                         for nc, cond in detailed_next:
@@ -619,11 +641,12 @@ class LibrarianEngine:
                                             break
                                 if is_incompatible:
                                     continue
-                            queue.append((nc, current, depth + 1, cond))
+                            next_nodes.append((nc, cond))
                     else:
                         for nc in calls_map.get(lookup_key, {}).get("callees", []):
-                            queue.append((nc, current, depth + 1, None))
+                            next_nodes.append((nc, None))
 
+                    # B. Synthesized calls (dataflow / sink calls)
                     current_obj = next((f for f in funcs if f.get("name") == lookup_key), None)
                     if current_obj and "dataflow" in current_obj:
                         for atom in current_obj["dataflow"]:
@@ -652,16 +675,21 @@ class LibrarianEngine:
                                         "variable_states": {},
                                         "flow_paths": []
                                     }
-                                queue.append((synth_name, current, depth + 1, None))
+                                next_nodes.append((synth_name, None))
+                    
+                    # Push children onto the stack in reverse order to preserve left-to-right execution flow
+                    for nc, cond in reversed(next_nodes):
+                        stack.append((nc, current, depth + 1, cond))
         
-        is_hub = len(transitions) > 15
+        is_hub_map = len(transitions) > 15
         return {
             "entrypoint": entrypoint_func,
             "states": list(states),
             "transitions": transitions,
             "state_meta": sym_meta,
-            "is_macro_map": is_hub
+            "is_macro_map": is_hub_map
         }
+
 
     def _analyze_behavioral_characteristics(self, state_name: str, state_meta: dict) -> dict:
         code = state_meta.get("code_snippet", "")
