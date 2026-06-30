@@ -46,13 +46,25 @@ class VaultRetriever:
                 dataflow_summary = line.strip()
                 break
 
-        # 2. security_level: value from Assumed Environmental Context or content
+        # 2. security_level & generic environmental constraints
         security_level = None
+        constraints = {}
         env_match = re.search(r"##+\s*Assumed Environmental Context\s*\n(.*?)(?=\n##+|\Z)", content, re.DOTALL | re.IGNORECASE)
-        search_text = env_match.group(1) if env_match else content
-        sec_level_match = re.search(r"==\s*['\"]([^'\"]+)['\"]", search_text)
-        if sec_level_match:
-            security_level = sec_level_match.group(1)
+        if env_match:
+            search_text = env_match.group(1)
+            # Match patterns like: name == 'value' or name() == 'value' or name == "value"
+            for m in re.finditer(r"([\w\(\)\.\-\>\:\[\]]+)\s*==\s*['\"]([^'\"]+)['\"]", search_text):
+                var_name, val = m.groups()
+                constraints[var_name.strip()] = val.strip()
+                if "security" in var_name.lower() or "level" in var_name.lower():
+                    security_level = val.strip()
+            
+            # Fallback if no explicit variable name found but a quoted value is present
+            if not constraints:
+                sec_level_match = re.search(r"==\s*['\"]([^'\"]+)['\"]", search_text)
+                if sec_level_match:
+                    security_level = sec_level_match.group(1)
+                    constraints["security_level"] = security_level
 
         # 3. entanglement_count: count of Inbound Callers listed in Entanglements
         entanglement_count = 0
@@ -74,6 +86,7 @@ class VaultRetriever:
         return {
             "dataflow_summary": dataflow_summary,
             "security_level": security_level,
+            "constraints": constraints,
             "entanglement_count": entanglement_count,
             "note_type": note_type
         }
@@ -119,12 +132,8 @@ class VaultRetriever:
                             stale_files.append((filepath, rel_path, mtime))
                             
         if len(stale_files) > 50 and not force and existing_index:
-            # Too many stale files. To avoid a huge synchronous hit (e.g. during tests),
-            # we just return the existing index and defer the background build.
-            import threading
-            def _bg_rebuild():
-                self.build_index(force=True)
-            threading.Thread(target=_bg_rebuild, daemon=True).start()
+            import logging
+            logging.getLogger(__name__).warning("RAG index is stale (>50 files changed). Run 'qbrain index' to rebuild.")
             return list(existing_index.values())
 
         for filepath, rel_path, mtime in stale_files:
@@ -204,6 +213,7 @@ class VaultRetriever:
                 "similarity": final_score,
                 "dataflow_summary": item.get("dataflow_summary", ""),
                 "security_level": item.get("security_level", None),
+                "constraints": item.get("constraints", {}),
                 "entanglement_count": item.get("entanglement_count", 0),
                 "note_type": item.get("note_type", "unknown")
             })

@@ -70,22 +70,7 @@ def sync_library(config, indexer, console, deep=False):
             setup_files = finder.find_setup_config_files()
             entrypoints = finder.find_entrypoints()
             
-            # Export central entrypoints.md
-            entrypoints_path = os.path.join(vault_path, "entrypoints.md")
-            os.makedirs(vault_path, exist_ok=True)
-            with open(entrypoints_path, "w", encoding="utf-8") as ep_file:
-                ep_file.write("# Application Entrypoints\n\n")
-
-                ep_file.write("This page lists all identified entrypoints and their corresponding behavior models.\n\n")
-                ep_file.write("| Entrypoint | Source File | Behavior Map |\n")
-                ep_file.write("| :--- | :--- | :--- |\n")
-                for ep in entrypoints:
-                    ep_path = ep.get("file", "")
-                    ep_name = ep.get("name", "main")
-                    ep_safe = engine._get_safe_filename(ep_path) if ep_path else ep_name
-                    behavior_link = f"[[behaviors/{ep_safe}\\|Behavior Machine]]"
-                    ep_file.write(f"| `{ep_name}` | `[files/{ep_path}](file:///{os.path.join(repo_path, ep_path).replace('\\\\', '/')})` | {behavior_link} |\n")
-                ep_file.write("\n")
+            entrypoint_to_behaviors = {}
 
             for setup_file in setup_files:
                 try:
@@ -374,6 +359,7 @@ def sync_library(config, indexer, console, deep=False):
                     model["name"] = engine._get_safe_filename(ep_path)
                     behaviors.append(model)
                     processed_behaviors.add(ep_path)
+                    entrypoint_to_behaviors.setdefault(ep_path, []).append((model["name"], "Behavior Machine"))
                 else:
                     max_behaviors = config.data.get("rules", {}).get("behavior_model", {}).get("max_behaviors_per_entrypoint", 8)
                     if len(scenarios) > max_behaviors:
@@ -416,6 +402,7 @@ def sync_library(config, indexer, console, deep=False):
                         model["name"], model["scenario_context"] = behavior_id, constraints
                         behaviors.append(model)
                         processed_behaviors.add(behavior_id)
+                        entrypoint_to_behaviors.setdefault(ep_path, []).append((behavior_id, scene_label))
 
             for model in behaviors:
                 b_name = model["name"]
@@ -445,8 +432,10 @@ def sync_library(config, indexer, console, deep=False):
                     "variable_states": f.get("variable_states", {}), "flow_paths": f.get("flow_paths", []),
                     "behaviors": symbol_to_behaviors.get(name, [])
                 }
-                # Aggregated into files instead of exporting individual symbol files
-                if f_path: file_symbols_data.setdefault(f_path, []).append(symbol_data)
+                # Aggregated into files and also exported as individual symbol files for RAG
+                if f_path: 
+                    file_symbols_data.setdefault(f_path, []).append(symbol_data)
+                    engine.export_symbol(symbol_data)
 
 
             files_map = {}
@@ -516,6 +505,31 @@ def sync_library(config, indexer, console, deep=False):
 
             for model in behaviors:
                 engine.export_behavior(model)
+
+            # Export central entrypoints.md
+            entrypoints_path = os.path.join(vault_path, "entrypoints.md")
+            os.makedirs(vault_path, exist_ok=True)
+            with open(entrypoints_path, "w", encoding="utf-8") as ep_file:
+                ep_file.write("# Application Entrypoints\n\n")
+                ep_file.write("This page lists all identified entrypoints and their corresponding behavior models.\n\n")
+                ep_file.write("| Entrypoint | Source File | Behavior Map |\n")
+                ep_file.write("| :--- | :--- | :--- |\n")
+                for ep in entrypoints:
+                    ep_path_val = ep.get("file", "")
+                    ep_name = ep.get("name", "main")
+                    
+                    associated = entrypoint_to_behaviors.get(ep_path_val, [])
+                    if not associated:
+                        ep_safe = engine._get_safe_filename(ep_path_val) if ep_path_val else ep_name
+                        behavior_link = f"[[behaviors/{ep_safe}\\|Behavior Machine]]"
+                    else:
+                        links = []
+                        for b_id, label in associated:
+                            links.append(f"[[behaviors/{b_id}\\|{label}]]")
+                        behavior_link = ", ".join(links)
+                        
+                    ep_file.write(f"| `{ep_name}` | `[files/{ep_path_val}](file:///{os.path.join(repo_path, ep_path_val).replace('\\\\', '/')})` | {behavior_link} |\n")
+                ep_file.write("\n")
             try:
                 diff_tool = BranchDiff(config, Embedder())
                 engine.export_branch_diff(diff_tool.compare_branches("HEAD", config.data.get("branch_diff", {}).get("base_branch") or diff_tool.get_default_branch()))

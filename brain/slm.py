@@ -161,15 +161,29 @@ class QBrainSLM:
         response.append("## 💡 Cognitive Synthesis & Insights")
         
         q_lower = symbol_or_query.lower()
-        if "vuln" in q_lower or "security" in q_lower or "sql" in q_lower or "xss" in q_lower:
+        is_security = (
+            any(k in q_lower for k in ["vuln", "security", "sql", "xss", "csrf", "upload", "bypass", "inject"]) or
+            any("behavior" in note.get("file_path", "").lower() for note in context_notes) or
+            any(note.get("metadata", {}).get("security_level") for note in context_notes) or
+            any(note.get("metadata", {}).get("constraints") for note in context_notes)
+        )
+        if is_security:
+            # Dynamically determine heading based on query/context
+            has_explicit_security = (
+                any(k in q_lower for k in ["vuln", "security", "sql", "xss", "csrf", "upload", "bypass", "inject"]) or
+                any("vuln" in str(note.get("metadata", {})).lower() for note in context_notes)
+            )
+            heading = "Security Posture Assessment" if has_explicit_security else "Environmental & Constraint Assessment"
+            
             response.append("> [!IMPORTANT]")
-            response.append("> **Security Posture Assessment**:")
-            response.append("> The query indicates an analysis of potential vulnerabilities or security boundaries.")
+            response.append(f"> **{heading}**:")
+            response.append("> The query or retrieved context indicates an analysis of potential vulnerabilities or environmental constraints.")
             
             for note in context_notes:
                 meta = note.get('metadata') or {}
                 # Behaviors -> sec level and taint
                 sec_level = meta.get("security_level")
+                constraints = meta.get("constraints") or {}
                 dataflow = meta.get("dataflow_summary")
                 # Symbols -> callers
                 entanglements = meta.get("entanglement_count")
@@ -179,7 +193,10 @@ class QBrainSLM:
                 base_name = os.path.basename(path).replace(".md", "")
                 
                 if "behaviors" in path:
-                    if sec_level:
+                    if constraints:
+                        for var, val in constraints.items():
+                            evidence.append(f"constraint `{var} == {val}`")
+                    elif sec_level:
                         evidence.append(f"constraint `{sec_level}`")
                     if dataflow:
                         # try to extract source/sink or just the row

@@ -275,9 +275,9 @@ class LibrarianEngine:
         if not name: return
         if ".." in name or name.startswith("/") or name.startswith("\\"):
             raise ValueError(f"Security Risk: Path traversal detected in symbol name: {name}")
-        
+            
         has_docstring = 1 if symbol_data.get("docstring") else 0
-        has_taint = 1 if "_TAINT_" in symbol_data.get("variable_states", {}) else 0
+        has_taint = 1 if any("TAINT" in str(k).upper() or "TAINT" in str(v).upper() for k, v in symbol_data.get("variable_states", {}).items()) else 0
         entanglement_count = len(symbol_data.get("callees", []))
         caller_count = len(symbol_data.get("callers", []))
         
