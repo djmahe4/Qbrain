@@ -217,3 +217,32 @@ def test_quantum_correlator_stress():
     graph_symbols = {f"src/file_{i}.py:func_{i}" for i in range(1000) if i % 2 == 0}
     pairs = correlator.detect_decoherence(pairs, graph_symbols)
 
+def test_decoherence_filter_refined():
+    correlator = QuantumCorrelator()
+    pairs = [
+        EntangledPair(
+            comment_text="This public class returns null, true, false, and references ghost_func or GhostClass.",
+            comment_file="src/db.py",
+            comment_line=15,
+            symbol_name="src/db.py:run_query",
+            cosine_score=0.9,
+            flip_detected=False,
+            flip_reason="",
+            decoherence=False
+        )
+    ]
+    graph_symbols = {"src/db.py:run_query"}
+    pairs = correlator.detect_decoherence(pairs, graph_symbols)
+    
+    assert pairs[0].decoherence
+    # ghost_func and GhostClass should be flagged as ghosts
+    assert "ghost_func" in pairs[0].flip_reason
+    assert "GhostClass" in pairs[0].flip_reason
+    # Standard keywords like 'public', 'class', 'null', 'true', 'false' should NOT be flagged
+    assert "public" not in pairs[0].flip_reason
+    assert "class" not in pairs[0].flip_reason
+    assert "null" not in pairs[0].flip_reason
+    assert "true" not in pairs[0].flip_reason
+    assert "false" not in pairs[0].flip_reason
+
+

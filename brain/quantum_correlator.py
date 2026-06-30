@@ -136,17 +136,55 @@ class QuantumCorrelator:
         """
         short_names = {name.split(":")[-1] for name in graph_symbol_names}
         
+        # Common programming keywords, types, and capitalized English terms to ignore in ghost detection
+        ignored_words = {
+            "function", "method", "class", "interface", "enum", "module", "variable",
+            "public", "private", "protected", "return", "import", "export", "include",
+            "require", "const", "static", "void", "null", "true", "false", "default",
+            "string", "number", "boolean", "object", "array", "integer", "float",
+            "throws", "exception", "error", "catch", "try", "finally", "instance",
+            "this", "that", "they", "these", "those", "some", "many", "here", "there",
+            "user", "admin", "system", "database", "project", "file", "data", "code",
+            "note", "warning", "info", "debug", "trace", "query", "result", "value",
+            "object", "type", "name", "id", "key", "list", "dict", "set", "tuple"
+        }
+        
         for pair in pairs:
-            # Match backticked names like `my_func`
-            words = re.findall(r'`([^`]+)`', pair.comment_text)
+            # Match backticked names like `my_func` (always treated as symbols)
+            backticked_words = set(re.findall(r'`([^`]+)`', pair.comment_text))
+            
             # Match snake_case or camelCase-like words that look like identifiers
-            words += [w for w in re.findall(r'\b[a-zA-Z_]\w+\b', pair.comment_text) if len(w) > 3]
+            all_words = [w for w in re.findall(r'\b[a-zA-Z_]\w+\b', pair.comment_text) if len(w) > 3]
             
             ghosts = []
-            for word in words:
+            for word in all_words:
+                word_lower = word.lower()
                 if word in ["Function", "Method", "Class", "Interface", "Enum", "Module", "Variable"]:
                     continue
-                is_symbol_like = "_" in word or (word[0].islower() and any(c.isupper() for c in word)) or word[0].isupper()
+                if word_lower in ignored_words:
+                    continue
+                
+                # Check if it's a probable symbol
+                is_backticked = word in backticked_words
+                has_underscore = "_" in word
+                # camelCase or PascalCase (starts with lower and has upper, or has multiple uppers)
+                has_lowercase = any(c.islower() for c in word)
+                uppers = [c for c in word if c.isupper()]
+                is_camel_or_pascal = (word[0].islower() and len(uppers) >= 1) or (has_lowercase and len(uppers) >= 2)
+                
+                # A word is symbol-like if it is backticked, has underscore, is camel/pascal case,
+                # or is capitalized but NOT at the start of the comment/sentence.
+                is_symbol_like = is_backticked or has_underscore or is_camel_or_pascal
+                if not is_symbol_like and word[0].isupper():
+                    # It's a single capitalized word. Check if it's at the start of a sentence/comment.
+                    # We look at the character preceding the word in the comment text.
+                    pos = pair.comment_text.find(word)
+                    if pos > 0:
+                        preceding_text = pair.comment_text[:pos].strip()
+                        # If it doesn't follow a sentence-ending punctuation, it's likely a symbol
+                        if preceding_text and not preceding_text[-1] in [".", "!", "?", "-", "*", "\n"]:
+                            is_symbol_like = True
+                
                 if is_symbol_like and word not in short_names:
                     ghosts.append(word)
             

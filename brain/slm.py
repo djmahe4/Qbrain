@@ -118,7 +118,7 @@ class QBrainSLM:
             response.append("")
 
         # Live Dataflow Analysis (Step 5)
-        if code_snippet and self.config.language.lower() == "php":
+        if code_snippet and self.config.data.get("language", "php").lower() == "php":
             try:
                 from brain.dataflow_engine import DataFlowEngine
                 df_res = DataFlowEngine().analyze_snippet(code_snippet, "php")
@@ -203,6 +203,35 @@ class QBrainSLM:
                         evidence.append(f"dataflow state `{dataflow.strip()}`")
                 elif "symbols" in path and entanglements:
                     evidence.append(f"`{entanglements}` entangled callers")
+                elif "files" in path:
+                    content = note.get("content", "")
+                    findings = []
+                    in_sec_section = False
+                    
+                    # Extract findings from the 'Security Findings' or 'Security Findings' section
+                    for line in content.splitlines():
+                        line_stripped = line.strip()
+                        if "security findings" in line_stripped.lower():
+                            in_sec_section = True
+                            continue
+                        elif line_stripped.startswith("## ") and in_sec_section:
+                            in_sec_section = False
+                        
+                        if in_sec_section and line_stripped.startswith("-"):
+                            # Clean up markdown bullet and bold styling
+                            clean_finding = re.sub(r'^-\s*(\*\*[^*]+\*\*:\s*)?', '', line_stripped)
+                            if clean_finding:
+                                findings.append(clean_finding)
+                    
+                    if findings:
+                        # Append the dynamically extracted findings
+                        evidence.extend(findings[:2])  # Limit to top 2 to keep context concise
+                    else:
+                        # Fallback to tainted variables list if no explicit findings section exists
+                        tainted_vars = re.findall(r'\|\s*(\$[\w_]+)\s*\|\s*[^|]*?\s*\|\s*`?TAINTED`?\s*\|', content)
+                        if tainted_vars:
+                            vars_str = ", ".join(f"`{v}`" for v in tainted_vars)
+                            evidence.append(f"tainted variables: {vars_str}")
                 
                 if evidence:
                     response.append(f"> - **{base_name}** — {', '.join(evidence)}.")

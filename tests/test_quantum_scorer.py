@@ -66,3 +66,43 @@ def test_simulation_stress_1000_nodes():
         for node in nodes:
             assert not np.isnan(node.position[0])
             assert node.business_score >= 0.0
+
+def test_sigmoid_overflow_protection():
+    from brain.config import Config
+    from brain.indexer import Indexer
+    config = Config()
+    indexer = MagicMock()
+    scorer = QuantumScorer(config, indexer)
+    
+    v1 = np.array([1.0, 0.0])
+    f1 = FunctionNode("f1", v1)
+    
+    # Run simulation with an extremely large potential energy
+    # We force potential_energy to trigger potential math.exp overflow/underflow
+    funcs = [f1]
+    f1.potential_energy = 1e15  # Extremely large positive PE
+    scorer.run_simulation(funcs, iterations=1)
+    assert f1.business_score >= 0.0
+
+    f1.potential_energy = -1e15  # Extremely large negative PE
+    scorer.run_simulation(funcs, iterations=1)
+    assert f1.business_score >= 0.0
+
+def test_simulation_fallback_handling_large_graphs():
+    from brain.config import Config
+    from brain.indexer import Indexer
+    from unittest.mock import patch
+    config = Config()
+    indexer = MagicMock()
+    scorer = QuantumScorer(config, indexer)
+    
+    # Create 510 nodes (triggers >500 nodes path)
+    nodes = []
+    for i in range(510):
+        nodes.append(FunctionNode(f"func_{i}", np.array([1.0, 0.0])))
+        
+    # We mock numpy.outer to raise an exception, verifying fallback behaves gracefully and does not hang
+    with patch("numpy.outer", side_effect=Exception("Mocked NumPy Error")):
+        scorer.run_simulation(nodes, iterations=1)
+        assert len(nodes) == 510
+
