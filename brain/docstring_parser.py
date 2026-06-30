@@ -39,13 +39,7 @@ class DocstringParser:
             if not (is_doc or is_meta):
                 doc = f.get("docstring")
                 if not doc or doc == "\\" or doc.strip() == "":
-                    try:
-                        q_name = f.get("qualified_name") or f.get("name")
-                        snippet = self.indexer.get_code_snippet(q_name)
-                        if snippet.get("docstring"):
-                            f["docstring"] = snippet["docstring"]
-                    except Exception:
-                        pass
+                    f["docstring"] = ""
                 filtered.append(f)
                 
         return filtered
@@ -57,6 +51,38 @@ class DocstringParser:
         """
         return self._lang_parser.parse(func)
 
+
+    def audit_docstring(self, func_record: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Audit a docstring for quality and completeness.
+        Returns a report dictionary.
+        """
+        docstring = func_record.get("docstring") or ""
+        
+        report = {
+            "is_missing": not docstring,
+            "has_content": bool(docstring),
+            "quality_score": 0,
+            "findings": []
+        }
+        
+        if report["is_missing"]:
+            report["findings"].append("Docstring is missing.")
+            report["quality_score"] = 0
+            return report
+            
+        # Basic quality checks
+        report["quality_score"] = 50 # Base score for having content
+        
+        if len(docstring.split()) < 10:
+            report["findings"].append("Docstring is too short.")
+            report["quality_score"] -= 20
+        
+        # Check for presence of parameter/return info (heuristically)
+        if "param" in docstring.lower() or "argument" in docstring.lower() or "return" in docstring.lower():
+             report["quality_score"] += 30
+        
+        return report
     @staticmethod
     def build_genome(func: Dict[str, Any]) -> str:
         """

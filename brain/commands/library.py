@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 def sync_library(config, indexer, console, deep=False):
     repo_path = config.repo_path
-    vault_path = config.data.get("vault_path", os.path.join(repo_path, "obsidian_vault"))
+    vault_path = config.vault_path
     
     console.print(f"Syncing librarian from repository [cyan]{repo_path}[/cyan] to vault [cyan]{vault_path}[/cyan]...")
     
@@ -38,7 +38,7 @@ def sync_library(config, indexer, console, deep=False):
                     f["name"] = f"{f['file']}:{f['name']}"
             
             existing_names = {f["name"] for f in funcs}
-            raw_symbols = indexer.query_graph("MATCH (n) WHERE n:Function OR n:Method OR n:Module OR n:Class OR n:Interface OR n:Enum RETURN n.name AS name, labels(n) AS labels, n.file_path AS file, n.file AS file_alt")
+            raw_symbols = indexer.query_graph("MATCH (n:Function|Method|Module|Class|Interface|Enum) RETURN n.name AS name, labels(n) AS labels, n.file_path AS file, n.file AS file_alt")
             all_symbols_res = [dict(item) if isinstance(item, dict) else item for item in raw_symbols] if isinstance(raw_symbols, list) else []
             _EXCLUDED_EXTS = {".md", ".json", ".txt", ".yaml", ".yml", ".lock", ".log", ".toml"}
             for item in all_symbols_res:
@@ -84,7 +84,7 @@ def sync_library(config, indexer, console, deep=False):
             console.print("Loading cognitive properties...")
             cognitive_info = {}
             try:
-                cog_res = indexer.query_graph("MATCH (f) WHERE f:Function OR f:Method OR f:Module OR f:Class OR f:Interface OR f:Enum RETURN f.name AS name, f.file_path AS file, f.mass AS mass, f.potential_energy AS potential_energy, f.semantic_archetype AS archetype")
+                cog_res = indexer.query_graph("MATCH (f:Function|Method|Module|Class|Interface|Enum) RETURN f.name AS name, f.file_path AS file, f.mass AS mass, f.potential_energy AS potential_energy, f.semantic_archetype AS archetype")
                 for item in cog_res:
                     name, f_path = item.get("name"), item.get("file")
                     if name:

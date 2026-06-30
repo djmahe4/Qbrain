@@ -9,7 +9,7 @@ class VaultRetriever:
     def __init__(self, config, embedder: Embedder):
         self.config = config
         self.embedder = embedder
-        self.vault_path = os.path.abspath(config.data.get("vault_path", os.path.join(config.repo_path, "obsidian_vault")))
+        self.vault_path = config.vault_path
         self.index_dir = os.path.join(self.vault_path, ".qbrain", "_rag_index")
         self.index_file = os.path.join(self.index_dir, "index.json")
 

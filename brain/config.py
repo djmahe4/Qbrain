@@ -153,7 +153,10 @@ class Config:
 
     @property
     def vault_path(self) -> str:
-        return os.path.abspath(self.data.get("vault_path", DEFAULT_CONFIG["vault_path"]))
+        vpath = self.data.get("vault_path", DEFAULT_CONFIG["vault_path"])
+        if not os.path.isabs(vpath):
+            return os.path.abspath(os.path.join(self.repo_path, vpath))
+        return os.path.abspath(vpath)
 
     @property
     def project_name(self) -> str:

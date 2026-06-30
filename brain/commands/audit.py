@@ -9,6 +9,7 @@ from brain.embedder import Embedder
 from brain.systemic_auditor import SystemicAuditor
 from brain.entrypoint_finder import EntrypointFinder
 from brain.language_parser import detect_language
+from concurrent.futures import ThreadPoolExecutor
 
 def audit_vulnerabilities(config, indexer, console):
     """Scan the codebase for potential business logic vulnerabilities using optimized analysis."""
@@ -30,6 +31,7 @@ def audit_vulnerabilities(config, indexer, console):
     
     nodes = []
     for f in raw_funcs:
+        f["audit"] = doc_parser.audit_docstring(f)
         genome = doc_parser.build_genome(f)
         emb = embedder.embed(genome)
         node = FunctionNode(
@@ -50,9 +52,8 @@ def audit_vulnerabilities(config, indexer, console):
     candidates = sorted(nodes, key=lambda x: x.business_score, reverse=True)[:100]
     console.print(f"Step 3/5: Fetching code snippets for {len(candidates)} high-relevance symbols...")
     
-    enriched_funcs = []
-    with typer.progressbar(candidates, label="Fetching snippets") as progress:
-        for node in progress:
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        def fetch(node):
             orig = next((f for f in raw_funcs if f["name"] == node.name), {})
             q_name = orig.get("qualified_name") or node.name
             
@@ -69,7 +70,7 @@ def audit_vulnerabilities(config, indexer, console):
                                 code = f.read()
                         except Exception: pass
             
-            enriched_funcs.append({
+            return {
                 "name": node.name,
                 "business_score": node.business_score,
                 "mass": node.mass,
@@ -77,8 +78,11 @@ def audit_vulnerabilities(config, indexer, console):
                 "file": node.file,
                 "code_snippet": code,
                 "docstring": getattr(node, "docstring", ""),
-                "language": detect_language(node.file) if node.file else "generic"
-            })
+                "language": detect_language(node.file) if node.file else "generic",
+                "audit": orig.get("audit", {})
+            }
+
+        enriched_funcs = list(executor.map(fetch, candidates))
 
     # 4. Extract business rules for candidates
     console.print("Step 4/5: Mapping business logic rules and scanning...")
@@ -171,4 +175,14 @@ def audit_vulnerabilities(config, indexer, console):
             table_sys.add_row(f["severity"], f["path"], f"{f['sink']} ({f['variable']})")
         console.print(table_sys)
     
+
+    # Docstring Audit Findings
+    doc_findings = [f for f in enriched_funcs if f["audit"].get("findings")]
+    if doc_findings:
+        table_doc = Table(title=f"Docstring Quality Findings ({len(doc_findings)} found)")
+        table_doc.add_column("Function")
+        table_doc.add_column("Findings")
+        for f in doc_findings:
+            table_doc.add_row(f["name"], ", ".join(f["audit"]["findings"]))
+        console.print(table_doc)
     console.print("\n[yellow]Note:[/yellow] Detections are based on in-memory heuristics. Please verify each finding manually.")

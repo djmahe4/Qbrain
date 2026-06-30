@@ -276,7 +276,7 @@ def brain(
             
             # Export blackboard note if we have interesting events
             if drift_events or any(p.flip_detected or p.decoherence for p in pairs):
-                librarian = LibrarianEngine(config.repo_path, config.data.get("vault_path"), indexer=indexer)
+                librarian = LibrarianEngine(config.repo_path, config.vault_path, indexer=indexer)
                 librarian.registry = getattr(indexer, "registry", None)
                 librarian.export_blackboard_note(drift_events, pairs)
         except Exception as e:
