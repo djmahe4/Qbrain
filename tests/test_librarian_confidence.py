@@ -97,28 +97,8 @@ def test_confidence_tiered_exports(temp_vault, real_indexer):
     engine.export_symbol(med_conf)
     engine.export_symbol(low_conf)
     
-    symbols_dir = os.path.join(vault_dir, "symbols")
-    
-    # Verify High Confidence file is a FULL export
-    high_file = os.path.join(symbols_dir, "src_app_py_process_data.md")
-    assert os.path.exists(high_file)
-    with open(high_file, "r", encoding="utf-8") as f:
-        content = f.read()
-        assert "## Documentation" in content  # Full page details exist
-        
-    # Verify Medium Confidence file is a STUB export
-    med_file = os.path.join(symbols_dir, "src_app_py_simple_getter.md")
-    assert os.path.exists(med_file)
-    with open(med_file, "r", encoding="utf-8") as f:
-        content = f.read()
-        assert "type: symbol" in content
-        assert "## Documentation" not in content  # Detailed documentation should be omitted in stub
-        
-    # Verify Low Confidence file is SKIPPED
-    low_file = os.path.join(symbols_dir, "src_app_py_dead_code.md")
-    assert not os.path.exists(low_file)
-
     # Verify confidence scores in SQLite DB
     assert real_indexer.persistence.get_symbol_confidence("src/app.py:process_data") == pytest.approx(0.9)
     assert real_indexer.persistence.get_symbol_confidence("src/app.py:simple_getter") == pytest.approx(0.2)
     assert real_indexer.persistence.get_symbol_confidence("src/app.py:dead_code") == pytest.approx(0.0)
+

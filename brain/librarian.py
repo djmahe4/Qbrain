@@ -245,18 +245,37 @@ class LibrarianEngine:
             raise ValueError(f"Security Risk: Path traversal detected: {target}")
         return target
 
+    def _get_symbol_header_id(self, symbol_name: str, file_path: str = None) -> str:
+        """Extracts the qualified class/method name from a symbol name to use as a unique heading ID."""
+        if file_path and symbol_name.startswith(file_path + ":"):
+            return symbol_name[len(file_path)+1:]
+        if ":" in symbol_name:
+            parts = symbol_name.split(":")
+            # If the first part looks like a file path, strip it
+            if "/" in parts[0] or "\\" in parts[0] or "." in parts[0]:
+                return ":".join(parts[1:])
+        return symbol_name
+
+    def _get_symbol_wikilink(self, symbol_name: str, file_path: str = None) -> str:
+        """Generates a wikilink to a symbol aggregated inside its file page using its qualified heading ID."""
+        if not file_path and ":" in symbol_name:
+            parts = symbol_name.split(":")
+            file_path = parts[0]
+        header_id = self._get_symbol_header_id(symbol_name, file_path)
+        display_name = header_id.split(":")[-1]
+        if file_path:
+            safe_file = self._get_safe_filename(file_path)
+            return f"[[files/{safe_file}#Symbol: {header_id}\\|{display_name}]]"
+        return f"`{display_name}`"
+
     def export_symbol(self, symbol_data: dict):
+        """Deprecated: Symbols are now aggregated inside file pages to prevent vault overpopulation.
+        Still calculates and saves confidence scores to the database for analysis."""
         name = symbol_data.get("name")
         if not name: return
         if ".." in name or name.startswith("/") or name.startswith("\\"):
             raise ValueError(f"Security Risk: Path traversal detected in symbol name: {name}")
-        # If qualified, extract short name for display
-        display_name = name.split(":")[-1] if ":" in name else name
-        safe_name = self._get_safe_filename(name)
-        filepath = self._safe_path("symbols", f"{safe_name}.md")
-        kind = symbol_data.get("kind", "Function")
         
-        # Calculate confidence score and tier
         has_docstring = 1 if symbol_data.get("docstring") else 0
         has_taint = 1 if "_TAINT_" in symbol_data.get("variable_states", {}) else 0
         entanglement_count = len(symbol_data.get("callees", []))
@@ -273,205 +292,11 @@ class LibrarianEngine:
             
         if self.indexer and getattr(self.indexer, "persistence", None):
             self.indexer.persistence.save_symbol_confidence(name, confidence, tier)
-            
-        if tier == "skip":
-            return
 
-        frontmatter = {
-            "type": "symbol",
-            "kind": kind,
-            "name": name,
-            "language": symbol_data.get("language"),
-            "file": symbol_data.get("file"),
-            "signature": symbol_data.get("signature"),
-            "mass": symbol_data.get("mass"),
-            "potential_energy": symbol_data.get("potential_energy"),
-            "archetype": symbol_data.get("archetype"),
-            "line": symbol_data.get("line"),
-            "line_range": symbol_data.get("line_range")
-        }
-        
-        badge = "🔧"
-        if kind == "Class": badge = "🏛️"
-        elif kind == "Interface": badge = "📑"
-        elif kind == "Enum": badge = "🗳️"
-        elif kind == "Variable": badge = "📌"
-        elif kind == "Module": badge = "📦"
-        elif kind == "Method": badge = "⚡"
 
-        if tier == "stub":
-            with open(filepath, "w", encoding="utf-8") as f:
-                f.write("---\n")
-                yaml.safe_dump(frontmatter, f, default_flow_style=False)
-                f.write("---\n\n")
-                f.write(f"# {badge} {kind}: {display_name}\n\n")
-                if symbol_data.get("line") is not None:
-                    f.write(f"**Line:** {symbol_data.get('line')}\n\n")
-                
-                callers = symbol_data.get("callers", [])
-                callees = symbol_data.get("callees", [])
-                if callers or callees:
-                    f.write("## Entanglements\n")
-                    if callers:
-                        f.write("### Inbound Callers\n")
-                        for caller in callers:
-                            f.write(f"- [[symbols/{self._get_safe_filename(caller)}\\|{caller.split(':')[-1]}]] \n")
-                    if callees:
-                        f.write("### Outbound Callees\n")
-                        for callee in callees:
-                            f.write(f"- [[symbols/{self._get_safe_filename(callee)}\\|{callee.split(':')[-1]}]] \n")
-                    f.write("\n")
-            return
 
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write("---\n")
-            yaml.safe_dump(frontmatter, f, default_flow_style=False)
-            f.write("---\n\n")
-            f.write(f"# {badge} {kind}: {display_name}\n\n")
-            if symbol_data.get("line") is not None:
-                f.write(f"**Line:** {symbol_data.get('line')}\n\n")
-            
-            f.write("## Semantic Context\n")
-            if symbol_data.get("archetype"):
-                f.write(f"- **Archetype:** {symbol_data.get('archetype')}\n")
-            if symbol_data.get("mass") is not None:
-                f.write(f"- **Cognitive Mass:** {symbol_data.get('mass'):.2f}\n")
-            if symbol_data.get("potential_energy") is not None:
-                f.write(f"- **Potential Energy:** {symbol_data.get('potential_energy'):.2f}\n")
-            f.write("\n")
-            if symbol_data.get("docstring"):
-                f.write(f"## Documentation\n{symbol_data.get('docstring')}\n\n")
-            
-            var_states = symbol_data.get("variable_states", {})
-            flow_paths = symbol_data.get("flow_paths", [])
-            
-            # Members section for Classes and Enums
-            if kind in ("Class", "Enum", "Interface"):
-                f.write("## Members\n")
-                # Try both qualified and display name
-                symbol_meta = var_states.get(name) or var_states.get(display_name)
-                methods = symbol_meta.get("methods", []) if isinstance(symbol_meta, dict) else []
-                if methods:
-                    f.write("### Methods\n")
-                    for m in methods:
-                        f.write(f"- [[symbols/{self._get_safe_filename(name + ':' + m)}\\|{m}]] \n")
-                    f.write("\n")
-
-                # Extract properties
-                props = symbol_meta.get("properties", {}) if isinstance(symbol_meta, dict) else {}
-                if props:
-                    f.write("### Properties\n")
-                    f.write("| Property | Type | Visibility | Default |\n")
-                    f.write("|:---|:---|:---|:---|\n")
-                    for p_name, p_info in props.items():
-                        f.write(f"| `${p_name}` | `{p_info.get('type', 'unknown')}` | {p_info.get('visibility', '—')} | `{p_info.get('default', '—')}` |\n")
-                    f.write("\n")
-
-            if var_states:
-                f.write("## Data Model & Constraints\n")
-                f.write("| Variable | Type | State | Properties / Constraints |\n")
-                f.write("|:---|:---|:---|:---|\n")
-                for var, data in var_states.items():
-                    if var == name: continue # Skip the class definition itself here
-                    if not isinstance(data, dict):
-                        f.write(f"| `{var}` | `unknown` | `CONSTANT` | value `{data}` |\n")
-                        continue
-                    state = data.get("state", "CONSTANT")
-                    vtype = data.get("type", "unknown")
-                    details = []
-                    
-                    if state == "CONSTANT" and data.get("value"):
-                        val = data.get("value")
-                        source = data.get("source", "internal")
-                        details.append(f"value `{val}` (from `{source}`)")
-                    
-                    props = data.get("properties", {})
-                    if isinstance(props, dict):
-                        for p, pdata in props.items():
-                            details.append(f"prop `{p}` ({pdata.get('type')})")
-                    
-                    constraints = data.get("constraints", [])
-                    if isinstance(constraints, list):
-                        for c in list(set(constraints)):
-                            details.append(f"check `{c}`")
-                            
-                    details_str = ", ".join(details) if details else "—"
-                    f.write(f"| `{var}` | `{vtype}` | `{state}` | {details_str} |\n")
-                f.write("\n")
-                
-            if flow_paths:
-                f.write("## Dataflow Graph\n")
-                f.write("```mermaid\n")
-                f.write("graph LR\n")
-                for i, path in enumerate(flow_paths):
-                    src = str(path.get("source", "internal")).replace('"', "'")
-                    sink = str(path.get("sink", "unknown")).replace('"', "'")
-                    var = str(path.get("variable", "data")).replace('"', "'")
-                    state = path.get("state", "UNKNOWN")
-                    vtype = path.get("type", "")
-                    line = f":{path.get('line')}" if path.get("line") else ""
-                    label = f"{var}{line}:{vtype} ({state})" if vtype else f"{var}{line} ({state})"
-                    f.write(f'  P{i}_SRC["{src}"] -- "{label}" --> P{i}_SINK["{sink}"]\n')
-                f.write("```\n\n")
-
-            if symbol_data.get("params"):
-                f.write("## Parameters\n")
-                for param in symbol_data.get("params", []):
-                    f.write(f"- `{param.get('name')}` ({param.get('type')}): {param.get('description', '')}\n")
-                f.write("\n")
-            if symbol_data.get("returns"):
-                ret = symbol_data.get("returns")
-                rtype = ret.get("type") if isinstance(ret, dict) else (ret if isinstance(ret, str) else "")
-                rdesc = ret.get("description", "") if isinstance(ret, dict) else ""
-                if rtype or rdesc:
-                    f.write(f"## Returns\n`{rtype}`: {rdesc}\n\n")
-            
-            if symbol_data.get("semantic_neighbors"):
-                f.write("## Semantic Neighbors\n")
-                for neighbor, sim in symbol_data["semantic_neighbors"]:
-                    f.write(f"- [[symbols/{self._get_safe_filename(neighbor)}\\|{neighbor.split(':')[-1]}]] ({sim * 100:.1f}% similarity)\n")
-                f.write("\n")
-            
-            callers = symbol_data.get("callers", [])
-            callees = symbol_data.get("callees", [])
-            if callers or callees:
-                f.write("## Entanglements\n")
-                if callers:
-                    f.write("### Inbound Callers\n")
-                    for caller in callers:
-                        f.write(f"- [[symbols/{self._get_safe_filename(caller)}\\|{caller.split(':')[-1]}]] \n")
-                if callees:
-                    f.write("### Outbound Callees\n")
-                    for callee in callees:
-                        f.write(f"- [[symbols/{self._get_safe_filename(callee)}\\|{callee.split(':')[-1]}]] \n")
-                f.write("\n")
-                
-            if symbol_data.get("business_rules"):
-                f.write("## Business Rules\n")
-                for rule in symbol_data.get("business_rules", []):
-                    f.write(f"- {rule}\n")
-                f.write("\n")
-
-            if symbol_data.get("vulnerabilities"):
-                f.write("## Security Findings\n")
-                for vuln in symbol_data.get("vulnerabilities", []):
-                    f.write(f"- **{vuln.get('severity', 'LOW')}**: {vuln.get('message') or vuln.get('description')}\n")
-                f.write("\n")
-
-            if symbol_data.get("code_snippet"):
-                f.write("## Implementation\n")
-                lang = symbol_data.get("language") or "generic"
-                f.write(f"```{lang}\n")
-                f.write(symbol_data["code_snippet"])
-                f.write("\n```\n")
-            
-            behaviors = symbol_data.get("behaviors", [])
-            if behaviors:
-                f.write("## Related Behaviors\n")
-                for b in sorted(list(set(behaviors))):
-                    f.write(f"- [[behaviors/{self._get_safe_filename(b)}\\|{b}]]\n")
-                f.write("\n")
     def export_file(self, file_data: dict):
+
         file_path = file_data.get("file_path")
         if not file_path: return
         safe_name = self._get_safe_filename(file_path)
@@ -507,6 +332,7 @@ class LibrarianEngine:
             if file_data.get("archetypes"):
                 f.write(f"- **Archetypes:** {', '.join(file_data.get('archetypes'))}\n")
             f.write("\n")
+            
             var_states = file_data.get("variable_states", {})
             if var_states:
                 f.write("## File-Level Data Model\n")
@@ -538,7 +364,7 @@ class LibrarianEngine:
 
             symbols_data = file_data.get("symbols_data", [])
             if symbols_data:
-                f.write("## Symbols and Logic\n")
+                f.write("## Symbols Index\n")
                 f.write("| Symbol | Kind | Line | Signature | Description |\n")
                 f.write("|:---|:---|:---|:---|:---|\n")
                 for s in symbols_data:
@@ -547,21 +373,116 @@ class LibrarianEngine:
                     line = s.get("line", "—")
                     sig = s.get("signature") or name
                     doc = (s.get("docstring") or "").split("\n")[0]
+                    header_id = self._get_symbol_header_id(name, file_path)
                     display_name = name.split(":")[-1] if ":" in name else name
-                    f.write(f"| [[symbols/{self._get_safe_filename(name)}\\|{display_name}]] | `{kind}` | {line} | `{sig}` | {doc} |\n")
+                    # Link to the local heading on this same page
+                    f.write(f"| [[#Symbol: {header_id}\\|{display_name}]] | `{kind}` | {line} | `{sig}` | {doc} |\n")
                 f.write("\n")
+
+                f.write("## Detailed Symbol Specifications\n\n")
+                for s in symbols_data:
+                    name = s.get("name")
+                    header_id = self._get_symbol_header_id(name, file_path)
+                    display_name = name.split(":")[-1] if ":" in name else name
+                    kind = s.get("kind", "Function")
+                    line = s.get("line", "—")
+                    sig = s.get("signature") or name
+                    doc = s.get("docstring") or ""
+                    mass = s.get("mass", 1.0)
+                    pe = s.get("potential_energy", 0.0)
+                    archetype = s.get("archetype", "generic")
+                    
+                    badge = "🔧"
+                    if kind == "Class": badge = "🏛️"
+                    elif kind == "Interface": badge = "📑"
+                    elif kind == "Enum": badge = "🗳️"
+                    elif kind == "Variable": badge = "📌"
+                    elif kind == "Module": badge = "📦"
+                    elif kind == "Method": badge = "⚡"
+                    
+                    f.write(f"### Symbol: {header_id}\n")
+                    f.write(f"- **Kind:** `{kind}`\n")
+                    f.write(f"- **Line:** {line}\n")
+                    f.write(f"- **Archetype:** `{archetype}`\n")
+                    f.write(f"- **Cognitive Mass:** `{mass:.2f}`\n")
+                    f.write(f"- **Potential Energy:** `{pe:.2f}`\n")
+                    if sig:
+                        f.write(f"- **Signature:** `{sig}`\n")
+                    f.write("\n")
+
+                    
+                    if doc:
+                        f.write(f"#### Documentation\n{doc}\n\n")
+                        
+                    s_params = s.get("params", [])
+                    if s_params:
+                        f.write("#### Parameters\n")
+                        for param in s_params:
+                            f.write(f"- `{param.get('name')}` ({param.get('type')}): {param.get('description', '')}\n")
+                        f.write("\n")
+                        
+                    s_returns = s.get("returns")
+                    if s_returns:
+                        rtype = s_returns.get("type") if isinstance(s_returns, dict) else (s_returns if isinstance(s_returns, str) else "")
+                        rdesc = s_returns.get("description", "") if isinstance(s_returns, dict) else ""
+                        if rtype or rdesc:
+                            f.write(f"#### Returns\n`{rtype}`: {rdesc}\n\n")
+                            
+                    callers = s.get("callers", [])
+                    callees = s.get("callees", [])
+                    if callers or callees:
+                        f.write("#### Entanglements\n")
+                        if callers:
+                            f.write("##### Inbound Callers\n")
+                            for caller in callers:
+                                f.write(f"- {self._get_symbol_wikilink(caller)}\n")
+                        if callees:
+                            f.write("##### Outbound Callees\n")
+                            for callee in callees:
+                                f.write(f"- {self._get_symbol_wikilink(callee)}\n")
+                        f.write("\n")
+                        
+                    s_rules = s.get("business_rules", [])
+                    if s_rules:
+                        f.write("#### Business Rules\n")
+                        for rule in s_rules:
+                            f.write(f"- {rule}\n")
+                        f.write("\n")
+                        
+                    s_vulns = s.get("vulnerabilities", [])
+                    if s_vulns:
+                        f.write("#### Security Findings\n")
+                        for vuln in s_vulns:
+                            f.write(f"- **{vuln.get('severity', 'LOW')}**: {vuln.get('message') or vuln.get('description')}\n")
+                        f.write("\n")
+                        
+                    s_code = s.get("code_snippet", "")
+                    if s_code:
+                        f.write("#### Implementation\n")
+                        lang = s.get("language") or "generic"
+                        f.write(f"```{lang}\n")
+                        # Cap code snippet to 40 lines
+                        lines = s_code.splitlines()
+                        if len(lines) > 40:
+                            f.write("\n".join(lines[:40]))
+                            f.write(f"\n\n[... Truncated {len(lines) - 40} lines. View source file at line {line} ...]\n")
+                        else:
+                            f.write(s_code)
+                        f.write("\n```\n\n")
+                    
+                    f.write("---\n\n")
 
                 all_rules = []
                 for s in symbols_data:
                     for rule in s.get("business_rules", []):
-                        all_rules.append(f"- **{s.get('name')}**: {rule}")
+                        all_rules.append(f"- **{self._get_symbol_wikilink(s.get('name'))}**: {rule}")
                 
                 if all_rules:
                     f.write("## Business Logic & Requirements\n")
                     for rule in all_rules:
                         f.write(f"{rule}\n")
                     f.write("\n")
-
+ 
                 all_flows = []
                 for s in symbols_data:
                     for flow in s.get("flow_paths", []):
@@ -578,23 +499,19 @@ class LibrarianEngine:
                     f.write("| Source | Variable | State | Sink | Line |\n")
                     f.write("|:---|:---|:---|:---|:---|\n")
                     for flow in all_flows:
-                        f.write(f"| `{flow['source']}` | `{flow['variable']}` | `{flow['state']}` | `{flow['sink'] or 'internal'}` | {flow.get('line', '—')} |\n")
+                        source_link = self._get_symbol_wikilink(flow['source'])
+                        sink_link = self._get_symbol_wikilink(flow['sink']) if flow['sink'] and flow['sink'] != 'internal' else '`internal`'
+                        f.write(f"| {source_link} | `{flow['variable']}` | `{flow['state']}` | {sink_link} | {flow.get('line', '—')} |\n")
                     f.write("\n")
-
-            symbols = file_data.get("symbols", [])
-            if symbols:
-                f.write("## Navigation\n")
-                for s in symbols:
-                    display_s = s.split(":")[-1] if ":" in s else s
-                    f.write(f"- [[symbols/{self._get_safe_filename(s)}\\|{display_s}]]\n")
-                f.write("\n")
-                
+ 
             behaviors = file_data.get("behaviors", [])
             if behaviors:
                 f.write("## Related Behaviors\n")
                 for b in sorted(list(set(behaviors))):
                     f.write(f"- [[behaviors/{self._get_safe_filename(b)}\\|{b}]]\n")
                 f.write("\n")
+
+
 
     def _make_transition_label(self, caller_name: str, callee_name: str, funcs: List[dict], sym_meta: dict) -> str:
         caller_obj = next((f for f in funcs if f.get("name") == caller_name), None)
@@ -1172,7 +1089,10 @@ class LibrarianEngine:
             f.write("# Docstring & Quality Invariants Warnings\n\n")
             f.write("| Symbol | File | Warnings |\n")
             f.write("|:---|:---|:---|\n")
-            for w in warnings: f.write(f"| [[symbols/{self._get_safe_filename(w['name'])}\\|{w['name'].split(':')[-1]}]] | {w['file']} | {', '.join(w['warnings'])} |\n")
+            for w in warnings:
+                symbol_link = self._get_symbol_wikilink(w['name'], w['file'])
+                f.write(f"| {symbol_link} | {w['file']} | {', '.join(w['warnings'])} |\n")
+
 
     def export_prerequisites(self, setup_files: List[str], registry):
         """Generates a centralized prerequisites.md to document bootstrapping requirements."""
@@ -1290,8 +1210,8 @@ class LibrarianEngine:
                 f.write("| Auth Gate Symbol | Inbound Callers | Confidence |\n")
                 f.write("| :--- | :--- | :--- |\n")
                 for g in gates:
-                    short_sym = g["symbol"].split(":")[-1]
-                    f.write(f"| [[symbols/{self._get_safe_filename(g['symbol'])}\\|{short_sym}]] | {len(g['callers'])} | {g['gate_confidence'] * 100:.1f}% |\n")
+                    symbol_link = self._get_symbol_wikilink(g["symbol"])
+                    f.write(f"| {symbol_link} | {len(g['callers'])} | {g['gate_confidence'] * 100:.1f}% |\n")
             f.write("\n")
             
             f.write("## Authenticated Zone (Callers of Auth Gates)\n\n")
@@ -1299,9 +1219,10 @@ class LibrarianEngine:
                 f.write("*No symbols in authenticated zone.*\n")
             else:
                 for c in sorted(list(auth_caller_set)):
-                    short_c = c.split(":")[-1]
-                    f.write(f"- [[symbols/{self._get_safe_filename(c)}\\|{short_c}]]\n")
+                    symbol_link = self._get_symbol_wikilink(c)
+                    f.write(f"- {symbol_link}\n")
             f.write("\n")
+
 
     def export_vulnerabilities(self, vulns: List[dict]):
         """
@@ -1405,12 +1326,12 @@ class LibrarianEngine:
                     sev = v.get("severity", "LOW").upper()
                     icon = SEVERITY_ICON.get(sev, "")
                     name = v.get("function") or v.get("name") or "unknown"
-                    safe_link = v.get("safe_link") or self._get_safe_filename(name)
-                    display_name = name.split(":")[-1]
                     file_path = v.get("file", "unknown")
+                    symbol_link = self._get_symbol_wikilink(name, file_path)
                     desc = (v.get("description") or v.get("message") or "").replace("|", "\\|")
-                    f.write(f"| {icon} {sev} | [[symbols/{safe_link}\\|{display_name}]] | {file_path} | {desc} |\n")
+                    f.write(f"| {icon} {sev} | {symbol_link} | {file_path} | {desc} |\n")
                 f.write("\n")
+
 
             # ── CWE Top 40 Coverage Matrix ────────────────────────────────────
             f.write("---\n\n## CWE Top 40 Detection Coverage\n\n")
@@ -1480,11 +1401,15 @@ class LibrarianEngine:
             f.write("## 🏋️ Complexity Hotspots (Highest Mass)\n")
             f.write("| Symbol | File | Mass | Archetype |\n")
             f.write("|:---|:---|:---|:---|\n")
-            for h in hotspots.get("complexity", []): f.write(f"| [[symbols/{self._get_safe_filename(h['name'])}\\|{h['name'].split(':')[-1]}]] | {h.get('file', 'unknown')} | {h['mass']:.1f} | {h.get('archetype', '—')} |\n")
+            for h in hotspots.get("complexity", []):
+                symbol_link = self._get_symbol_wikilink(h['name'], h.get('file'))
+                f.write(f"| {symbol_link} | {h.get('file', 'unknown')} | {h['mass']:.1f} | {h.get('archetype', '—')} |\n")
             f.write("\n## ⚡ Attention Hotspots (Highest Drift / Attention Debt)\n")
             f.write("| Symbol | File | Potential Energy | Archetype |\n")
             f.write("|:---|:---|:---|:---|\n")
-            for h in hotspots.get("attention", []): f.write(f"| [[symbols/{self._get_safe_filename(h['name'])}\\|{h['name'].split(':')[-1]}]] | {h.get('file', 'unknown')} | {h['potential_energy']:.2f} | {h.get('archetype', '—')} |\n")
+            for h in hotspots.get("attention", []):
+                symbol_link = self._get_symbol_wikilink(h['name'], h.get('file'))
+                f.write(f"| {symbol_link} | {h.get('file', 'unknown')} | {h['potential_energy']:.2f} | {h.get('archetype', '—')} |\n")
 
     def export_archetypes(self, groups: dict):
         filepath = self._safe_path("rules", "archetypes.md")
@@ -1496,8 +1421,10 @@ class LibrarianEngine:
                 f.write(f"## {title_arch} (Narrative: [[narratives/archetype_{safe_arch}]])\n")
                 for s in symbols[:15]:
                     conf_str = f" (Confidence: {s['confidence']:.2%})" if "confidence" in s else ""
-                    f.write(f"- [[symbols/{self._get_safe_filename(s['name'])}\\|{s['name'].split(':')[-1]}]] {conf_str}\n")
+                    symbol_link = self._get_symbol_wikilink(s['name'], s.get('file'))
+                    f.write(f"- {symbol_link}{conf_str}\n")
                 f.write("\n")
+
 
     def export_branch_diff(self, diff: dict):
         filepath = self._safe_path("changes", "branch_diff.md")

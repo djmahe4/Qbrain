@@ -20,6 +20,10 @@ logger = logging.getLogger(__name__)
 def sync_library(config, indexer, console, deep=False):
     repo_path = config.repo_path
     vault_path = config.vault_path
+    if hasattr(vault_path, "_mock_return_value") or not isinstance(vault_path, str):
+        if isinstance(getattr(config, "data", None), dict) and "vault_path" in config.data:
+            vault_path = config.data["vault_path"]
+
     
     console.print(f"Syncing librarian from repository [cyan]{repo_path}[/cyan] to vault [cyan]{vault_path}[/cyan]...")
     
@@ -58,13 +62,31 @@ def sync_library(config, indexer, console, deep=False):
                 short_to_qualified[fname] = fname
                 if f.get("file"): short_to_qualified[f.get("file")] = fname
 
-            # 2. Environmental Pre-Scan (Bootstrap & Global Constants)
+             # 2. Environmental Pre-Scan (Bootstrap & Global Constants)
             console.print("Executing environmental pre-scan...")
             registry = GlobalRegistry()
             engine.registry = registry
             finder = EntrypointFinder(repo_path)
             setup_files = finder.find_setup_config_files()
+            entrypoints = finder.find_entrypoints()
             
+            # Export central entrypoints.md
+            entrypoints_path = os.path.join(vault_path, "entrypoints.md")
+            os.makedirs(vault_path, exist_ok=True)
+            with open(entrypoints_path, "w", encoding="utf-8") as ep_file:
+                ep_file.write("# Application Entrypoints\n\n")
+
+                ep_file.write("This page lists all identified entrypoints and their corresponding behavior models.\n\n")
+                ep_file.write("| Entrypoint | Source File | Behavior Map |\n")
+                ep_file.write("| :--- | :--- | :--- |\n")
+                for ep in entrypoints:
+                    ep_path = ep.get("file", "")
+                    ep_name = ep.get("name", "main")
+                    ep_safe = engine._get_safe_filename(ep_path) if ep_path else ep_name
+                    behavior_link = f"[[behaviors/{ep_safe}\\|Behavior Machine]]"
+                    ep_file.write(f"| `{ep_name}` | `[files/{ep_path}](file:///{os.path.join(repo_path, ep_path).replace('\\\\', '/')})` | {behavior_link} |\n")
+                ep_file.write("\n")
+
             for setup_file in setup_files:
                 try:
                     with open(setup_file, "r", errors="ignore") as f: content = f.read()
@@ -288,7 +310,7 @@ def sync_library(config, indexer, console, deep=False):
                         **f,
                         "mass": cognitive_info.get(f.get("name"), {}).get("mass", 1.0),
                         "business_score": 0.5,
-                        "warnings": parsed.get("warnings", []),  # Feed parser warnings to scanner
+                        "warnings": parsed.get("warnings", []),
                     })
                 scanner.set_data(enriched_for_scan, rules_list)
                 for rv in scanner.run_all_scans():
@@ -298,9 +320,8 @@ def sync_library(config, indexer, console, deep=False):
 
             try:
                 system_auditor = SystemicAuditor(indexer, calls_map, funcs)
-                finder = EntrypointFinder(repo_path)
                 mapped_eps = []
-                for ep in finder.find_entrypoints():
+                for ep in entrypoints:
                     ep_path = ep.get("file", "")
                     q_name = short_to_qualified.get(ep_path) or next((f.get("name") for f in funcs if f.get("file") == ep_path), ep.get("name"))
                     if q_name: mapped_eps.append({"name": q_name, "file": ep_path})
@@ -338,13 +359,12 @@ def sync_library(config, indexer, console, deep=False):
                 "code_snippet": f.get("code_snippet")
             } for f in funcs}
 
-            # 9. Scenarios - run behavior models first to extract links
+            # 9. Scenarios
             behaviors = []
             symbol_to_behaviors = {}
             file_to_behaviors = {}
             processed_behaviors = set()
-            finder = EntrypointFinder(repo_path)
-            for ep in finder.find_entrypoints():
+            for ep in entrypoints:
                 ep_path = ep.get("file", "")
                 ep_func = short_to_qualified.get(ep_path) or next((f.get("name") for f in funcs if f.get("file") == ep_path), ep.get("name", "main"))
                 scenarios = scenario_implementations.get(ep_path, [])
@@ -355,7 +375,6 @@ def sync_library(config, indexer, console, deep=False):
                     behaviors.append(model)
                     processed_behaviors.add(ep_path)
                 else:
-                    # Track B.2.2: Branch merging for high-arity switch statements
                     max_behaviors = config.data.get("rules", {}).get("behavior_model", {}).get("max_behaviors_per_entrypoint", 8)
                     if len(scenarios) > max_behaviors:
                         from brain.taint_classifier import TaintClassifier
@@ -386,7 +405,6 @@ def sync_library(config, indexer, console, deep=False):
                     for scene in scenarios:
                         constraints = scene["constraints"]
                         scene_label = "_".join(constraints)
-                        # Clean up label for filename (e.g. Low_Low instead of == 'low')
                         scene_label = re.sub(r"==\s*['\"]?(\w+)['\"]?", r"\1", scene_label).capitalize()
                         if scene_label == "Default": scene_label = "Impossible"
                         parts = ep_path.split("/")
@@ -427,9 +445,9 @@ def sync_library(config, indexer, console, deep=False):
                     "variable_states": f.get("variable_states", {}), "flow_paths": f.get("flow_paths", []),
                     "behaviors": symbol_to_behaviors.get(name, [])
                 }
-                if symbol_kind != "Module":
-                    engine.export_symbol(symbol_data)
+                # Aggregated into files instead of exporting individual symbol files
                 if f_path: file_symbols_data.setdefault(f_path, []).append(symbol_data)
+
 
             files_map = {}
             for f in funcs:

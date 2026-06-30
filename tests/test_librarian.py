@@ -53,26 +53,33 @@ def test_librarian_exports_symbols(tmp_path):
     engine = LibrarianEngine(str(tmp_path), str(vault_path))
     engine.setup_vault()
 
-    symbol_data = {
-        "name": "validateToken",
+    file_data = {
+        "file_path": "src/auth.cpp",
         "language": "cpp",
-        "file": "src/auth.cpp",
-        "signature": "bool validateToken(string t)",
-        "docstring": "Validates a jwt token.",
-        "params": [{"name": "t", "type": "string", "description": "token string"}],
-        "returns": {"type": "bool", "description": "true if valid"},
-        "business_rules": ["Validates expiry", "Checks signature"]
+        "lines_of_code": 100,
+        "size_bytes": 1024,
+        "symbols_data": [{
+            "name": "validateToken",
+            "language": "cpp",
+            "file": "src/auth.cpp",
+            "signature": "bool validateToken(string t)",
+            "docstring": "Validates a jwt token.",
+            "params": [{"name": "t", "type": "string", "description": "token string"}],
+            "returns": {"type": "bool", "description": "true if valid"},
+            "business_rules": ["Validates expiry", "Checks signature"]
+        }]
     }
 
-    engine.export_symbol(symbol_data)
-    symbol_file = vault_path / "symbols" / "validateToken.md"
-    assert os.path.exists(symbol_file)
-    with open(symbol_file, "r", encoding="utf-8") as f:
+    engine.export_file(file_data)
+    file_doc = vault_path / "files" / "src_auth_cpp.md"
+    assert os.path.exists(file_doc)
+    with open(file_doc, "r", encoding="utf-8") as f:
         content = f.read()
 
-    assert "type: symbol" in content
-    assert "name: validateToken" in content
-    assert "Mermaid" not in content  # basic symbols don't have mermaid unless mapped to behavior
+    assert "type: file" in content
+    assert "### Symbol: validateToken" in content
+    assert "Validates a jwt token." in content
+
 
 def test_librarian_exports_behavior_state_machine(tmp_path):
     vault_path = tmp_path / "obsidian_vault"

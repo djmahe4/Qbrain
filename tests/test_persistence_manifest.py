@@ -182,18 +182,19 @@ def test_sync_library_loop_simulation(tmp_path):
     vault_path = config.data["vault_path"]
     assert os.path.exists(vault_path)
 
-    # Confirm symbols and files directories exist and contain markdown reports
-    symbols_dir = os.path.join(vault_path, "symbols")
+    # Confirm files directory exists and contains markdown reports
     files_dir = os.path.join(vault_path, "files")
-    assert os.path.exists(symbols_dir)
     assert os.path.exists(files_dir)
 
-    symbol_files = os.listdir(symbols_dir)
-    assert len(symbol_files) > 0
+    file_files = os.listdir(files_dir)
+    assert len(file_files) > 0
 
     # Ensure files contain valid frontmatter and metadata
-    symbol_file_path = os.path.join(symbols_dir, symbol_files[0])
-    with open(symbol_file_path, "r", encoding="utf-8") as sf:
+    file_path = os.path.join(files_dir, "src_app_py.md")
+    assert os.path.exists(file_path)
+    with open(file_path, "r", encoding="utf-8") as sf:
         content = sf.read()
         assert content.startswith("---")
-        assert "archetype" in content or "winner" in content
+        assert "type: file" in content
+        assert "### Symbol: main" in content
+

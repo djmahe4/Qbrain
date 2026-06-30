@@ -158,6 +158,8 @@ class QuantumCorrelator:
 
     def to_context_summary(self, pairs: List[EntangledPair]) -> str:
         """Produce a compact text block for SLM consumption."""
+        if not pairs:
+            return "No semantic correlations or entanglements detected in the current codebase state."
         lines = []
         for pair in pairs:
             status = []
@@ -172,6 +174,7 @@ class QuantumCorrelator:
                 f"(cosine: {pair.cosine_score:.2f}){status_str}"
             )
         return "\n".join(lines)
+
 
     def persist(self, pairs: List[EntangledPair], persistence) -> None:
         """Write to entanglements table."""

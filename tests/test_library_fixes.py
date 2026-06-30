@@ -192,23 +192,19 @@ def test_sync_library_symbol_kind_differentiation(mocker, tmp_path):
     from rich.console import Console
     library.sync_library(config, indexer, Console())
 
-    # Verify files created in vault under symbols/
-    # Inspect content for frontmatter kind and header badges
-    class_file = os.path.join(vault_path, "symbols", "main_py_MyClass.md")
-    interface_file = os.path.join(vault_path, "symbols", "main_py_MyInterface.md")
+    # Verify file created in vault under files/
+    # Inspect content for detailed symbol specifications
+    file_path = os.path.join(vault_path, "files", "main_py.md")
 
-    assert os.path.exists(class_file)
-    assert os.path.exists(interface_file)
+    assert os.path.exists(file_path)
 
-    with open(class_file, "r", encoding="utf-8") as f:
+    with open(file_path, "r", encoding="utf-8") as f:
         content = f.read()
-        assert "kind: Class" in content
-        assert "# 🏛️ Class: MyClass" in content
+        assert "### Symbol: MyClass" in content
+        assert "- **Kind:** `Class`" in content
+        assert "### Symbol: MyInterface" in content
+        assert "- **Kind:** `Interface`" in content
 
-    with open(interface_file, "r", encoding="utf-8") as f:
-        content = f.read()
-        assert "kind: Interface" in content
-        assert "# 📑 Interface: MyInterface" in content or "# 🏛️ Interface: MyInterface" in content or "Interface: MyInterface" in content
 
 
 def test_potential_energy_majority_zero_check(mocker, tmp_path):

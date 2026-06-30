@@ -75,7 +75,8 @@ def test_brain_cli_command_real_simulation(temp_repo, monkeypatch):
     assert result.exit_code == 0
     assert "qbrain SLM Cognitive Summary" in result.stdout
     assert "Semantic Correlations" in result.stdout
-    assert "src/app.py:login_user" in result.stdout
+    assert "login_user" in result.stdout
+
 
     # 5. Test ADR action delegation is preserved
     result_adr = runner.invoke(app, ["brain", "dummy", "--adr", "update", "--adr-content", "new content"])
