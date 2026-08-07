@@ -17,9 +17,13 @@ from brain.parsers import php as php_parser
 
 logger = logging.getLogger(__name__)
 
-def sync_library(config, indexer, console):
+def sync_library(config, indexer, console, deep=False):
     repo_path = config.repo_path
-    vault_path = config.data.get("vault_path", os.path.join(repo_path, "obsidian_vault"))
+    vault_path = config.vault_path
+    if hasattr(vault_path, "_mock_return_value") or not isinstance(vault_path, str):
+        if isinstance(getattr(config, "data", None), dict) and "vault_path" in config.data:
+            vault_path = config.data["vault_path"]
+
     
     console.print(f"Syncing librarian from repository [cyan]{repo_path}[/cyan] to vault [cyan]{vault_path}[/cyan]...")
     
@@ -38,7 +42,7 @@ def sync_library(config, indexer, console):
                     f["name"] = f"{f['file']}:{f['name']}"
             
             existing_names = {f["name"] for f in funcs}
-            raw_symbols = indexer.query_graph("MATCH (n) WHERE n:Function OR n:Method OR n:Module OR n:Class OR n:Interface OR n:Enum RETURN n.name AS name, labels(n) AS labels, n.file_path AS file, n.file AS file_alt")
+            raw_symbols = indexer.query_graph("MATCH (n:Function|Method|Module|Class|Interface|Enum) RETURN n.name AS name, labels(n) AS labels, n.file_path AS file, n.file AS file_alt")
             all_symbols_res = [dict(item) if isinstance(item, dict) else item for item in raw_symbols] if isinstance(raw_symbols, list) else []
             _EXCLUDED_EXTS = {".md", ".json", ".txt", ".yaml", ".yml", ".lock", ".log", ".toml"}
             for item in all_symbols_res:
@@ -58,13 +62,16 @@ def sync_library(config, indexer, console):
                 short_to_qualified[fname] = fname
                 if f.get("file"): short_to_qualified[f.get("file")] = fname
 
-            # 2. Environmental Pre-Scan (Bootstrap & Global Constants)
+             # 2. Environmental Pre-Scan (Bootstrap & Global Constants)
             console.print("Executing environmental pre-scan...")
             registry = GlobalRegistry()
             engine.registry = registry
             finder = EntrypointFinder(repo_path)
             setup_files = finder.find_setup_config_files()
+            entrypoints = finder.find_entrypoints()
             
+            entrypoint_to_behaviors = {}
+
             for setup_file in setup_files:
                 try:
                     with open(setup_file, "r", errors="ignore") as f: content = f.read()
@@ -84,7 +91,7 @@ def sync_library(config, indexer, console):
             console.print("Loading cognitive properties...")
             cognitive_info = {}
             try:
-                cog_res = indexer.query_graph("MATCH (f) WHERE f:Function OR f:Method OR f:Module OR f:Class OR f:Interface OR f:Enum RETURN f.name AS name, f.file_path AS file, f.mass AS mass, f.potential_energy AS potential_energy, f.semantic_archetype AS archetype")
+                cog_res = indexer.query_graph("MATCH (f:Function|Method|Module|Class|Interface|Enum) RETURN f.name AS name, f.file_path AS file, f.mass AS mass, f.potential_energy AS potential_energy, f.semantic_archetype AS archetype")
                 for item in cog_res:
                     name, f_path = item.get("name"), item.get("file")
                     if name:
@@ -288,7 +295,7 @@ def sync_library(config, indexer, console):
                         **f,
                         "mass": cognitive_info.get(f.get("name"), {}).get("mass", 1.0),
                         "business_score": 0.5,
-                        "warnings": parsed.get("warnings", []),  # Feed parser warnings to scanner
+                        "warnings": parsed.get("warnings", []),
                     })
                 scanner.set_data(enriched_for_scan, rules_list)
                 for rv in scanner.run_all_scans():
@@ -298,9 +305,8 @@ def sync_library(config, indexer, console):
 
             try:
                 system_auditor = SystemicAuditor(indexer, calls_map, funcs)
-                finder = EntrypointFinder(repo_path)
                 mapped_eps = []
-                for ep in finder.find_entrypoints():
+                for ep in entrypoints:
                     ep_path = ep.get("file", "")
                     q_name = short_to_qualified.get(ep_path) or next((f.get("name") for f in funcs if f.get("file") == ep_path), ep.get("name"))
                     if q_name: mapped_eps.append({"name": q_name, "file": ep_path})
@@ -334,16 +340,16 @@ def sync_library(config, indexer, console):
                 "potential_energy": cognitive_info.get(f["name"], {}).get("potential_energy", 0.0),
                 "archetype": cognitive_info.get(f["name"], {}).get("archetype", "generic"),
                 "variable_states": f.get("variable_states", {}),
-                "flow_paths": f.get("flow_paths", [])
+                "flow_paths": f.get("flow_paths", []),
+                "code_snippet": f.get("code_snippet")
             } for f in funcs}
 
-            # 9. Scenarios - run behavior models first to extract links
+            # 9. Scenarios
             behaviors = []
             symbol_to_behaviors = {}
             file_to_behaviors = {}
             processed_behaviors = set()
-            finder = EntrypointFinder(repo_path)
-            for ep in finder.find_entrypoints():
+            for ep in entrypoints:
                 ep_path = ep.get("file", "")
                 ep_func = short_to_qualified.get(ep_path) or next((f.get("name") for f in funcs if f.get("file") == ep_path), ep.get("name", "main"))
                 scenarios = scenario_implementations.get(ep_path, [])
@@ -353,8 +359,8 @@ def sync_library(config, indexer, console):
                     model["name"] = engine._get_safe_filename(ep_path)
                     behaviors.append(model)
                     processed_behaviors.add(ep_path)
+                    entrypoint_to_behaviors.setdefault(ep_path, []).append((model["name"], "Behavior Machine"))
                 else:
-                    # Track B.2.2: Branch merging for high-arity switch statements
                     max_behaviors = config.data.get("rules", {}).get("behavior_model", {}).get("max_behaviors_per_entrypoint", 8)
                     if len(scenarios) > max_behaviors:
                         from brain.taint_classifier import TaintClassifier
@@ -385,7 +391,6 @@ def sync_library(config, indexer, console):
                     for scene in scenarios:
                         constraints = scene["constraints"]
                         scene_label = "_".join(constraints)
-                        # Clean up label for filename (e.g. Low_Low instead of == 'low')
                         scene_label = re.sub(r"==\s*['\"]?(\w+)['\"]?", r"\1", scene_label).capitalize()
                         if scene_label == "Default": scene_label = "Impossible"
                         parts = ep_path.split("/")
@@ -397,6 +402,7 @@ def sync_library(config, indexer, console):
                         model["name"], model["scenario_context"] = behavior_id, constraints
                         behaviors.append(model)
                         processed_behaviors.add(behavior_id)
+                        entrypoint_to_behaviors.setdefault(ep_path, []).append((behavior_id, scene_label))
 
             for model in behaviors:
                 b_name = model["name"]
@@ -426,9 +432,11 @@ def sync_library(config, indexer, console):
                     "variable_states": f.get("variable_states", {}), "flow_paths": f.get("flow_paths", []),
                     "behaviors": symbol_to_behaviors.get(name, [])
                 }
-                if symbol_kind != "Module":
+                # Aggregated into files and also exported as individual symbol files for RAG
+                if f_path: 
+                    file_symbols_data.setdefault(f_path, []).append(symbol_data)
                     engine.export_symbol(symbol_data)
-                if f_path: file_symbols_data.setdefault(f_path, []).append(symbol_data)
+
 
             files_map = {}
             for f in funcs:
@@ -497,10 +505,56 @@ def sync_library(config, indexer, console):
 
             for model in behaviors:
                 engine.export_behavior(model)
+
+            # Export central entrypoints.md
+            entrypoints_path = os.path.join(vault_path, "entrypoints.md")
+            os.makedirs(vault_path, exist_ok=True)
+            with open(entrypoints_path, "w", encoding="utf-8") as ep_file:
+                ep_file.write("# Application Entrypoints\n\n")
+                ep_file.write("This page lists all identified entrypoints and their corresponding behavior models.\n\n")
+                ep_file.write("| Entrypoint | Source File | Behavior Map |\n")
+                ep_file.write("| :--- | :--- | :--- |\n")
+                for ep in entrypoints:
+                    ep_path_val = ep.get("file", "")
+                    ep_name = ep.get("name", "main")
+                    
+                    associated = entrypoint_to_behaviors.get(ep_path_val, [])
+                    if not associated:
+                        ep_safe = engine._get_safe_filename(ep_path_val) if ep_path_val else ep_name
+                        behavior_link = f"[[behaviors/{ep_safe}\\|Behavior Machine]]"
+                    else:
+                        links = []
+                        for b_id, label in associated:
+                            links.append(f"[[behaviors/{b_id}\\|{label}]]")
+                        behavior_link = ", ".join(links)
+                        
+                    abs_ep_path = os.path.join(repo_path, ep_path_val or "").replace('\\', '/')
+                    ep_file.write(f"| `{ep_name}` | `[files/{ep_path_val}](file:///{abs_ep_path})` | {behavior_link} |\n")
+                ep_file.write("\n")
             try:
                 diff_tool = BranchDiff(config, Embedder())
                 engine.export_branch_diff(diff_tool.compare_branches("HEAD", config.data.get("branch_diff", {}).get("base_branch") or diff_tool.get_default_branch()))
             except Exception: pass
+
+            # Deep Graph Reconciliation (Sprint 4)
+            if deep:
+                console.print("Running deep graph-vs-disk reconciliation...")
+                from brain.sync_guard import SyncGuard
+                guard = SyncGuard()
+                drift_events = guard.run_tier3(repo_path, indexer)
+                
+                # Fetch currently tracked file count
+                total_files = len(set(f.get("file") for f in funcs if f.get("file")))
+                tombstones = [e.file_path for e in drift_events if e.event_type == "TOMBSTONE"]
+                
+                if drift_events:
+                    engine.export_blackboard_note(drift_events)
+                    console.print(f"Exported blackboard note documenting {len(drift_events)} drift events.")
+                    
+                if guard.should_trigger_repopulation(drift_events, total_files):
+                    console.print(f"[yellow]Tombstones exceed threshold ({len(tombstones)} / {total_files}). Triggering selective vault pruning...[/yellow]")
+                    engine.prune_stale_pages(tombstones)
+
             console.print("[green]Obsidian Vault synchronized successfully![/green]")
     except Exception as e:
         console.print(f"[red]Error during librarian sync:[/red] {e}")

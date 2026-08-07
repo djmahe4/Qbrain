@@ -53,26 +53,33 @@ def test_librarian_exports_symbols(tmp_path):
     engine = LibrarianEngine(str(tmp_path), str(vault_path))
     engine.setup_vault()
 
-    symbol_data = {
-        "name": "validateToken",
+    file_data = {
+        "file_path": "src/auth.cpp",
         "language": "cpp",
-        "file": "src/auth.cpp",
-        "signature": "bool validateToken(string t)",
-        "docstring": "Validates a jwt token.",
-        "params": [{"name": "t", "type": "string", "description": "token string"}],
-        "returns": {"type": "bool", "description": "true if valid"},
-        "business_rules": ["Validates expiry", "Checks signature"]
+        "lines_of_code": 100,
+        "size_bytes": 1024,
+        "symbols_data": [{
+            "name": "validateToken",
+            "language": "cpp",
+            "file": "src/auth.cpp",
+            "signature": "bool validateToken(string t)",
+            "docstring": "Validates a jwt token.",
+            "params": [{"name": "t", "type": "string", "description": "token string"}],
+            "returns": {"type": "bool", "description": "true if valid"},
+            "business_rules": ["Validates expiry", "Checks signature"]
+        }]
     }
 
-    engine.export_symbol(symbol_data)
-    symbol_file = vault_path / "symbols" / "validateToken.md"
-    assert os.path.exists(symbol_file)
-    with open(symbol_file, "r", encoding="utf-8") as f:
+    engine.export_file(file_data)
+    file_doc = vault_path / "files" / "src_auth_cpp.md"
+    assert os.path.exists(file_doc)
+    with open(file_doc, "r", encoding="utf-8") as f:
         content = f.read()
 
-    assert "type: symbol" in content
-    assert "name: validateToken" in content
-    assert "Mermaid" not in content  # basic symbols don't have mermaid unless mapped to behavior
+    assert "type: file" in content
+    assert "### Symbol: validateToken" in content
+    assert "Validates a jwt token." in content
+
 
 def test_librarian_exports_behavior_state_machine(tmp_path):
     vault_path = tmp_path / "obsidian_vault"
@@ -221,4 +228,56 @@ def test_librarian_exports_behavior_with_dataflow_and_variables(tmp_path):
     assert "graph LR" in content
     assert '"$_GET"' in content
     assert '"echo"' in content
+
+
+def test_behavioral_characteristics_export(tmp_path):
+    vault_path = tmp_path / "obsidian_vault"
+    engine = LibrarianEngine(str(tmp_path), str(vault_path))
+    engine.setup_vault()
+
+    behavior_data = {
+        "name": "login-flow",
+        "states": ["REQUEST_RECEIVED", "VALIDATING"],
+        "transitions": [
+            {"from": "REQUEST_RECEIVED", "to": "VALIDATING"}
+        ],
+        "state_meta": {
+            "REQUEST_RECEIVED": {
+                "file": "src/app.py",
+                "line": 10,
+                "kind": "Function",
+                "code_snippet": "def receive_request(req):\n    try:\n        for item in req.items:\n            if item.val >= 100:\n                query = 'SELECT * FROM users WHERE id = ' + item.val\n                db.execute(query)\n    except Exception as e:\n        pass\n"
+            },
+            "VALIDATING": {
+                "file": "src/app.py",
+                "line": 20,
+                "kind": "Function",
+                "code_snippet": "def validate():\n    if timeout > 30:\n        raise TimeoutError()\n"
+            }
+        }
+    }
+
+    engine.export_behavior(behavior_data)
+    behavior_file = vault_path / "behaviors" / "login-flow.md"
+    assert os.path.exists(behavior_file)
+    with open(behavior_file, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    assert "## Behavioral Characteristics & Safety Constraints" in content
+    # For REQUEST_RECEIVED:
+    # Loops: loop (for/while/foreach)
+    # Conditions: conditionals (if/else/switch)
+    # Boundaries: `item.val >= 100`
+    # Recovery: exception handling / try-catch
+    # Performance: database operations
+    assert "loop (for/while/foreach)" in content
+    assert "conditionals (if/else/switch)" in content
+    assert "`item.val >= 100`" in content
+    assert "exception handling / try-catch" in content
+    assert "database operations" in content
+
+    # For VALIDATING:
+    # Stress/Performance: timeout configuration
+    assert "timeout configuration" in content
+
 

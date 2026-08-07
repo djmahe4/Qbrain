@@ -87,7 +87,7 @@ class DependencyMapper:
         Filters out non-code files like READMEs, JSON, etc.
         """
         # Use a broad query that is safe for the parser
-        query = "MATCH (d) RETURN d.name AS name, labels(d) AS types, d.file_path AS file_path, d.file AS file, d.target AS target LIMIT 5000"
+        query = "MATCH (d) RETURN d.name AS name, labels(d) AS types, d.file_path AS file_path, d.file AS file, d.target AS target LIMIT 50000"
         raw = self.indexer.query_graph(query)
         
         # Handle dict response format from mocks or Indexer

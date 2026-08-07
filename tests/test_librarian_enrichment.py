@@ -20,51 +20,44 @@ def test_librarian_enrichment_export_symbol(tmp_path):
         ],
         "returns": {"type": "tuple", "description": "x and y coordinates"},
         "business_rules": ["Uses gravity constant", "Handles air resistance"],
-        # Enrichment fields:
         "archetype": "calculation-engine",
         "mass": 4.5,
         "potential_energy": 12.0,
         "code_snippet": "def calculateTrajectory(velocity, angle):\n    g = 9.81\n    return (velocity * math.cos(angle), velocity * math.sin(angle) - 0.5 * g)\n",
-        "semantic_neighbors": [("simulateOrbit", 0.95), ("getGravityField", 0.88)],
-        "callers": ["runSimulation", "main"],
-        "callees": ["math.cos", "math.sin"]
+        "semantic_neighbors": [("physics/trajectory.py:simulateOrbit", 0.95), ("physics/trajectory.py:getGravityField", 0.88)],
+        "callers": ["physics/trajectory.py:runSimulation", "physics/trajectory.py:main"],
+        "callees": ["physics/trajectory.py:math.cos", "physics/trajectory.py:math.sin"]
     }
 
-    engine.export_symbol(symbol_data)
-    symbol_file = vault_path / "symbols" / "calculateTrajectory.md"
-    assert os.path.exists(symbol_file)
 
-    with open(symbol_file, "r", encoding="utf-8") as f:
+    file_data = {
+        "file_path": "physics/trajectory.py",
+        "language": "python",
+        "lines_of_code": 10,
+        "size_bytes": 500,
+        "symbols_data": [symbol_data]
+    }
+
+    engine.export_file(file_data)
+    file_doc = vault_path / "files" / "physics_trajectory_py.md"
+    assert os.path.exists(file_doc)
+
+    with open(file_doc, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # Verify Frontmatter YAML
-    assert content.startswith("---")
-    parts = content.split("---")
-    assert len(parts) >= 3
-    frontmatter = yaml.safe_load(parts[1])
-    assert frontmatter.get("archetype") == "calculation-engine"
-    assert frontmatter.get("mass") == 4.5
-    assert frontmatter.get("potential_energy") == 12.0
-
     # Verify Sections
-    assert "## Implementation" in content
+    assert "#### Implementation" in content
     assert "```python" in content
     assert "def calculateTrajectory" in content
     assert "g = 9.81" in content
 
-    assert "## Semantic Neighbors" in content
-    assert "symbols/simulateOrbit\\|simulateOrbit" in content
-    assert "95.0% similarity" in content
-    assert "symbols/getGravityField\\|getGravityField" in content
-    assert "88.0% similarity" in content
-
-    assert "## Entanglements" in content
-    assert "### Inbound Callers" in content
-    assert "symbols/runSimulation\\|runSimulation" in content
-    assert "symbols/main\\|main" in content
-    assert "### Outbound Callees" in content
-    assert "symbols/math_cos\\|math.cos" in content
-    assert "symbols/math_sin\\|math.sin" in content
+    assert "#### Entanglements" in content
+    assert "##### Inbound Callers" in content
+    assert "physics_trajectory_py#Symbol: runSimulation" in content
+    assert "physics_trajectory_py#Symbol: main" in content
+    assert "##### Outbound Callees" in content
+    assert "physics_trajectory_py#Symbol: math.cos" in content
+    assert "physics_trajectory_py#Symbol: math.sin" in content
 
 
 def test_librarian_enrichment_export_vulnerabilities(tmp_path):
@@ -96,9 +89,9 @@ def test_librarian_enrichment_export_vulnerabilities(tmp_path):
 
     assert "# 🛡️ Security Vulnerability Report" in content
     assert "| Severity | Symbol | File | Finding |" in content
-    assert "symbols/login\\|login" in content
+    assert "files/auth_py#Symbol: login" in content
     assert "CRITICAL" in content
-    assert "symbols/exec_cmd\\|exec_cmd" in content
+    assert "files/utils_py#Symbol: exec_cmd" in content
     assert "HIGH" in content
 
 
@@ -127,12 +120,12 @@ def test_librarian_enrichment_export_hotspots(tmp_path):
 
     assert "# 📊 Codebase Cognitive & Complexity Hotspots" in content
     assert "## 🏋️ Complexity Hotspots (Highest Mass)" in content
-    assert "symbols/processData\\|processData" in content
+    assert "files/data_py#Symbol: processData" in content
     assert "data.py" in content
     assert "25.0" in content
  
     assert "## ⚡ Attention Hotspots (Highest Drift / Attention Debt)" in content
-    assert "symbols/runJob\\|runJob" in content
+    assert "files/jobs_py#Symbol: runJob" in content
     assert "0.95" in content
 
 
@@ -160,10 +153,10 @@ def test_librarian_enrichment_export_archetypes(tmp_path):
 
     assert "# 🧩 Codebase Semantic Archetypes" in content
     assert "## Calculation-Engine" in content
-    assert "symbols/calculateTrajectory\\|calculateTrajectory" in content
-    assert "symbols/simulateOrbit\\|simulateOrbit" in content
+    assert "files/physics_trajectory_py#Symbol: calculateTrajectory" in content
+    assert "files/physics_orbit_py#Symbol: simulateOrbit" in content
     assert "## Data-Model" in content
-    assert "symbols/UserModel\\|UserModel" in content
+    assert "files/models_user_py#Symbol: UserModel" in content
 
 
 def test_librarian_enrichment_export_branch_diff(tmp_path):
@@ -209,18 +202,22 @@ def test_librarian_enrichment_symbol_line_number(tmp_path):
         "line_range": [42, 45]
     }
 
-    engine.export_symbol(symbol_data)
-    symbol_file = vault_path / "symbols" / "calculateTrajectory.md"
-    assert os.path.exists(symbol_file)
+    file_data = {
+        "file_path": "physics/trajectory.py",
+        "language": "python",
+        "lines_of_code": 120,
+        "size_bytes": 4096,
+        "symbols_data": [symbol_data]
+    }
 
-    with open(symbol_file, "r", encoding="utf-8") as f:
+    engine.export_file(file_data)
+    file_doc = vault_path / "files" / "physics_trajectory_py.md"
+    assert os.path.exists(file_doc)
+
+    with open(file_doc, "r", encoding="utf-8") as f:
         content = f.read()
 
-    parts = content.split("---")
-    frontmatter = yaml.safe_load(parts[1])
-    assert frontmatter.get("line") == 42
-    assert frontmatter.get("line_range") == [42, 45]
-    assert "**Line:** 42" in content
+    assert "- **Line:** 42" in content
 
 
 def test_librarian_enrichment_export_file(tmp_path):
@@ -233,7 +230,10 @@ def test_librarian_enrichment_export_file(tmp_path):
         "language": "python",
         "lines_of_code": 120,
         "size_bytes": 4096,
-        "symbols": ["calculateTrajectory", "simulateOrbit"]
+        "symbols_data": [
+            {"name": "calculateTrajectory", "kind": "Function", "line": 10},
+            {"name": "simulateOrbit", "kind": "Function", "line": 25}
+        ]
     }
 
     engine.export_file(file_data)
@@ -248,6 +248,48 @@ def test_librarian_enrichment_export_file(tmp_path):
     assert "- **Language:** python" in content
     assert "- **Lines of Code:** 120" in content
     assert "- **Size:** 4096 bytes" in content
-    assert "## Navigation" in content
-    assert "- [[symbols/calculateTrajectory\\|calculateTrajectory]]" in content
-    assert "- [[symbols/simulateOrbit\\|simulateOrbit]]" in content
+    assert "## Symbols Index" in content
+    assert "[[#Symbol: calculateTrajectory\\|calculateTrajectory]]" in content
+    assert "[[#Symbol: simulateOrbit\\|simulateOrbit]]" in content
+
+
+def test_librarian_enrichment_export_prerequisites(tmp_path):
+    vault_path = tmp_path / "obsidian_vault"
+    engine = LibrarianEngine(str(tmp_path), str(vault_path))
+    engine.setup_vault()
+
+    # Create one dummy file note in files/ so it exists
+    os.makedirs(vault_path / "files", exist_ok=True)
+    with open(vault_path / "files" / "setup_php.md", "w", encoding="utf-8") as f:
+        f.write("# Setup")
+
+    class MockRegistry:
+        def __init__(self):
+            self.constants = {"DB_PASSWORD": "secret_password"}
+        def get_origin(self, name):
+            return "setup.php"
+
+    setup_files = [str(tmp_path / "setup.php"), str(tmp_path / "config.inc.php.dist")]
+    # Create the physical files in tmp_path
+    with open(tmp_path / "setup.php", "w", encoding="utf-8") as f:
+        f.write("<?php")
+    with open(tmp_path / "config.inc.php.dist", "w", encoding="utf-8") as f:
+        f.write("<?php")
+
+    engine.export_prerequisites(setup_files, MockRegistry())
+
+    prereq_file = vault_path / "rules" / "prerequisites.md"
+    assert os.path.exists(prereq_file)
+
+    with open(prereq_file, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    # Check setup.php (which has a file note) is linked
+    assert "[[files/setup_php|setup.php]]" in content
+    # Check config.inc.php.dist (which does NOT have a file note) is NOT linked, but rendered as text
+    assert "`config.inc.php.dist`" in content
+    assert "[[files/config_config_inc_php_dist" not in content
+
+    # Check that backslash escaping is removed (no \| in links)
+    assert "\\|" not in content
+

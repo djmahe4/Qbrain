@@ -2,7 +2,7 @@ import typer
 import os
 import sys
 import json
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from rich.console import Console
 from brain.config import Config
 from brain.indexer import Indexer
@@ -154,13 +154,144 @@ def audit():
     config, indexer, _, _ = get_engine()
     audit_cmd.audit_vulnerabilities(config, indexer, console)
 
+def _build_static_taint_summary(context_notes: List[Dict[str, Any]]) -> str:
+    """Build a lightweight static taint summary when correlation is disabled."""
+    taint_lines = []
+    for note in context_notes:
+        content = note.get("content", "")
+        if "TAINTED" in content:
+            path = note.get("file_path", "")
+            base_name = os.path.basename(path)
+            
+            # Extract basic dataflow summary from metadata or a simple heuristic
+            meta = note.get("metadata") or {}
+            df = meta.get("dataflow_summary", "").strip()
+            if not df:
+                # Fallback to finding the first TAINTED line
+                for line in content.splitlines():
+                    if "TAINTED" in line:
+                        df = line.strip()
+                        break
+            if df:
+                taint_lines.append(f"- `{base_name}`: {df}")
+
+    if not taint_lines:
+        return "(no-correlate mode) Static taint summary: No TAINTED dataflows found in retrieved notes."
+    
+    res = "(no-correlate mode) Static taint summary from vault notes:\n" + "\n".join(taint_lines[:3])
+    return res
+
 @app.command()
-def brain(symbol: str = typer.Argument(..., help="Symbol name to query the cognitive model for")):
-    """Query the qbrain cognitive model for a specific symbol's intent and causal impact."""
-    _, _, _, _, _, _, _, _, api = get_cognitive_engine()
-    summary = api.generate_prose_summary(symbol)
-    console.print(f"[bold cyan]qbrain Narrative API Output:[/bold cyan]")
-    console.print(summary)
+def brain(
+    symbol_or_query: str = typer.Argument(..., help="Symbol name, general query, or ADR command"),
+    repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Path to the repository to load config from"),
+    snippet: Optional[str] = typer.Option(None, "--snippet", "-s", help="Code snippet for live dataflow analysis"),
+    diff: bool = typer.Option(False, "--diff", "-d", help="Analyze recent semantic branch differences as context"),
+    adr: Optional[str] = typer.Option(None, "--adr", help="Perform ADR action: list, create, get, update"),
+    adr_title: Optional[str] = typer.Option(None, "--adr-title", help="ADR Title (for create)"),
+    adr_content: Optional[str] = typer.Option(None, "--adr-content", help="ADR Content (for create/update)"),
+    adr_id: Optional[str] = typer.Option(None, "--adr-id", help="ADR ID (for get/update)"),
+    adr_status: Optional[str] = typer.Option(None, "--adr-status", help="ADR Status (for create/update)"),
+    correlate: bool = typer.Option(True, "--correlate/--no-correlate", help="Perform quantum correlation analysis")
+):
+    """
+    Query the qbrain cognitive model & local SLM.
+    Handles semantic query answering, branch diff reasoning, and ADR tracking.
+    """
+    from brain.rag.retriever import VaultRetriever
+    from brain.branch_diff import BranchDiff
+    from brain.slm import QBrainSLM
+
+    config, indexer, embedder, scorer, store, cem, san, cognitive, api = get_cognitive_engine(repo_path=repo)
+
+    
+    # 1. Check if it is a pure ADR operation
+    if adr:
+        res = indexer.manage_adr(
+            action=adr, adr_id=adr_id, title=adr_title, 
+            status=adr_status, content=adr_content
+        )
+        console.print("[bold green]ADR Action Result:[/bold green]")
+        console.print(res)
+        return
+
+    # 2. Gather context
+    context_notes = []
+    semantic_diff = None
+    
+    # RAG lookup
+    try:
+        retriever = VaultRetriever(config, embedder)
+        context_notes = retriever.retrieve(symbol_or_query, top_k=5)
+    except Exception:
+        pass
+
+    # Diff lookup
+    if diff:
+        try:
+            diff_tool = BranchDiff(config, embedder)
+            semantic_diff = diff_tool.compare_branches("HEAD", config.branch_diff_config.get("base_branch", "main"))
+        except Exception:
+            pass
+
+    # ADR Context
+    try:
+        adr_list = indexer.manage_adr("get")
+    except Exception:
+        adr_list = {}
+
+    # 4. Quantum Correlation
+    correlation_context = None
+    drift_events = []
+    if correlate:
+        try:
+            from brain.sync_guard import SyncGuard
+            from brain.quantum_correlator import QuantumCorrelator
+            from brain.librarian import LibrarianEngine
+            from brain.docstring_parser import DocstringParser
+            from brain.git_watcher import GitWatcher
+
+            guard = SyncGuard()
+            watcher = GitWatcher(config, indexer, scorer, embedder)
+            last_commit = watcher.get_last_processed_commit()
+            
+            drift_events = guard.run_tier1(config.repo_path, last_commit)
+            drift_events += guard.run_tier2(config.repo_path, indexer.persistence)
+            
+            doc_parser = DocstringParser(indexer)
+            comments = doc_parser.get_functions_with_docstrings()
+            beliefs = indexer.persistence.get_all_variable_states()
+
+            
+            graph_symbols = {r['name'] for r in indexer.search_graph(".*") if 'name' in r}
+            
+            correlator = QuantumCorrelator()
+            threshold = config.data.get("correlation_threshold", 0.72)
+            pairs = correlator.entangle(comments, beliefs, embedder, threshold=threshold)
+            pairs = correlator.detect_flips(pairs, beliefs)
+            pairs = correlator.detect_decoherence(pairs, graph_symbols)
+            correlator.persist(pairs, indexer.persistence)
+            
+            correlation_context = correlator.to_context_summary(pairs)
+            
+            # Export blackboard note if we have interesting events
+            if drift_events or any(p.flip_detected or p.decoherence for p in pairs):
+                librarian = LibrarianEngine(config.repo_path, config.vault_path, indexer=indexer)
+                librarian.registry = getattr(indexer, "registry", None)
+                librarian.export_blackboard_note(drift_events, pairs)
+        except Exception as e:
+            console.print(f"[yellow]Correlation pass skipped: {e}[/yellow]")
+            correlation_context = _build_static_taint_summary(context_notes)
+    else:
+        correlation_context = _build_static_taint_summary(context_notes)
+
+    # 3. Call local SLM with unified prompt
+    slm = QBrainSLM(config, retriever, adr_list, semantic_diff)
+    response = slm.generate(symbol_or_query, context_notes, correlation_context=correlation_context, code_snippet=snippet)
+    
+    console.print("[bold cyan]qbrain SLM Cognitive Summary:[/bold cyan]")
+    # Stream/print output
+    console.print(response)
 
 @app.command()
 def sleep():
@@ -178,11 +309,12 @@ app.add_typer(library_app, name="library")
 
 @library_app.command("sync")
 def library_sync(
-    repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Path to the repository to sync")
+    repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Path to the repository to sync"),
+    deep: bool = typer.Option(False, "--deep", help="Run Tier 3 tombstone + orphan reconciliation")
 ):
     """Sync symbols, behaviors, files, changes, rules to Obsidian vault."""
     config, indexer, _, _ = get_engine(repo)
-    library_cmd.sync_library(config, indexer, console)
+    library_cmd.sync_library(config, indexer, console, deep=deep)
 
 
 if __name__ == "__main__":

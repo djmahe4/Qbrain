@@ -258,17 +258,22 @@ class QuantumScorer:
             
             for idx, fi in enumerate(functions):
                 fi.potential_energy = float(pe_sums[idx])
-        except Exception:
-            for fi in functions:
-                fi.potential_energy = self.potential_energy(fi, functions)
+        except Exception as e:
+            logger.warning(f"Vectorized potential energy calculation failed ({e}); falling back to loop.")
+            for idx, fi in enumerate(functions):
+                if idx >= 200 and len(functions) > 500:
+                    # Cap fallback computation to prevent O(N^2) hang on massive graphs
+                    fi.potential_energy = 0.0
+                else:
+                    fi.potential_energy = self.potential_energy(fi, functions)
 
         energies = [abs(f.potential_energy) for f in functions]
         max_energy = max(energies) if energies and max(energies) > 0 else 1.0
 
         for fi in functions:
-            # Sigmoid normalisation
+            # Linear normalization mapping most negative (highest energy magnitude) to 1.0, and 0 to 0.0
             u_norm = fi.potential_energy / max_energy
-            pe_score = 1.0 - (1.0 / (1.0 + math.exp(-u_norm)))
+            pe_score = -u_norm
 
             # Centrality
             cent_score = self.cluster_centrality(fi, functions)

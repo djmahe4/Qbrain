@@ -59,15 +59,147 @@ def detect_language(file_path: str) -> str:
 
 from brain.parsers import python, javascript, solidity, go, rust, cpp, php
 
-def extract_dataflow(code_snippet: str, language: str) -> List[Dict[str, str]]:
-    """Extract dataflow information from code snippets."""
+def extract_dataflow(code_snippet: str, language: str) -> List[Dict[str, Any]]:
+    """Extract dataflow information from code snippets across multiple languages."""
     if not code_snippet:
         return []
     
     lang = language.lower()
     if lang == "php":
         return php.extract_dataflow(code_snippet)
-    return []
+    if lang == "python":
+        return python.extract_dataflow(code_snippet)
+    if lang in ("javascript", "typescript"):
+        return javascript.extract_dataflow(code_snippet)
+        
+    # Helper to parse general brace-based languages (Rust, Go, Solidity, C++)
+    dataflow = []
+    lines = code_snippet.splitlines(keepends=True)
+    line_starts = [0]
+    for line in lines:
+        line_starts.append(line_starts[-1] + len(line))
+        
+    def get_line(pos):
+        import bisect
+        return bisect.bisect_right(line_starts, pos)
+
+    current_pos = 0
+    for idx, line in enumerate(lines, 1):
+        line_stripped = line.strip()
+        if not line_stripped or line_stripped.startswith("//") or line_stripped.startswith("/*") or line_stripped.startswith("///"):
+            current_pos += len(line)
+            continue
+            
+        # 1. Delimiters
+        for char_idx, char in enumerate(line_stripped):
+            if char in ("{", "}"):
+                dataflow.append({
+                    "type": "delimiter",
+                    "value": char,
+                    "pos": current_pos + char_idx,
+                    "line": idx
+                })
+                
+        # 2. Parameters from function declaration
+        if lang == "rust":
+            func_match = re.match(r"^fn\s+\w+\s*(?:<[^>]+>)?\s*\(([^)]*)\)", line_stripped)
+        elif lang == "go":
+            func_match = re.match(r"^func\s+\w+\s*\(([^)]*)\)", line_stripped)
+        elif lang == "solidity":
+            func_match = re.match(r"^function\s+\w+\s*\(([^)]*)\)", line_stripped)
+        else: # cpp
+            func_match = re.match(r"^\w+\s+\w+\s*\(([^)]*)\)", line_stripped)
+            
+        if func_match:
+            params = func_match.group(1).split(",")
+            for p in params:
+                p = p.strip()
+                if not p: continue
+                # Parse variable name from param declaration (x: i32, val int, uint256 val)
+                if lang == "rust" and ":" in p:
+                    p_name = p.split(":")[0].strip()
+                elif lang == "go" and " " in p:
+                    p_name = p.split()[0].strip()
+                elif lang == "solidity" and " " in p:
+                    p_name = p.split()[-1].strip()
+                elif lang == "cpp" and " " in p:
+                    p_name = p.split()[-1].strip()
+                else:
+                    p_name = p
+                    
+                if p_name and p_name not in ("self", "cls"):
+                    dataflow.append({
+                        "type": "assignment",
+                        "variable": p_name,
+                        "operation": "=",
+                        "value": "param_input",
+                        "pos": current_pos + func_match.start(1),
+                        "line": idx
+                    })
+
+        # 3. Variable assignments
+        assign_match = None
+        if lang == "rust":
+            assign_match = re.match(r"^let\s+(?:mut\s+)?(\w+)\s*=\s*(.+)$", line_stripped)
+        elif lang == "go":
+            assign_match = re.match(r"^(\w+)\s*:=\s*(.+)$", line_stripped) or re.match(r"^var\s+(\w+)\s*=\s*(.+)$", line_stripped)
+        elif lang == "solidity":
+            assign_match = re.match(r"^(?:uint256|address|bool|string|bytes\d*)\s+(\w+)\s*=\s*(.+)$", line_stripped)
+        elif lang == "cpp":
+            assign_match = re.match(r"^(?:int|float|double|char|bool|auto|std::string)\s+(\w+)\s*=\s*(.+)$", line_stripped)
+            
+        if assign_match:
+            dataflow.append({
+                "type": "assignment",
+                "variable": assign_match.group(1),
+                "operation": "=",
+                "value": assign_match.group(2).strip().strip(";"),
+                "pos": current_pos + assign_match.start(1),
+                "line": idx
+            })
+        else:
+            # Fallback assignment (x = val)
+            fallback_assign = re.match(r"^(\w+)\s*(=|\+=|-=)\s*(.+)$", line_stripped)
+            # Make sure it's not a control flow keyword
+            if fallback_assign and fallback_assign.group(1) not in ("if", "for", "while", "return", "require", "revert"):
+                dataflow.append({
+                    "type": "assignment",
+                    "variable": fallback_assign.group(1),
+                    "operation": fallback_assign.group(2),
+                    "value": fallback_assign.group(3).strip().strip(";"),
+                    "pos": current_pos + fallback_assign.start(1),
+                    "line": idx
+                })
+
+        # 4. Conditions
+        cond_match = re.search(r"\b(if|while|for)\b\s*(?:\((.+)\)|(.+))", line_stripped)
+        if cond_match:
+            cond_val = cond_match.group(2) or cond_match.group(3)
+            cond_val = cond_val.strip().strip("{").strip()
+            dataflow.append({
+                "type": "condition",
+                "verb": cond_match.group(1),
+                "content": cond_val,
+                "pos": current_pos + cond_match.start(0),
+                "line": idx
+            })
+
+        # 5. Interrupts
+        interrupt_keywords = ("return", "panic", "throw", "require", "revert", "assert")
+        interrupt_match = re.match(fr"^({'|'.join(interrupt_keywords)})\b\s*(.*)$", line_stripped)
+        if interrupt_match:
+            dataflow.append({
+                "type": "interrupt",
+                "value": interrupt_match.group(1),
+                "pos": current_pos,
+                "line": idx
+            })
+
+        current_pos += len(line)
+
+    dataflow.sort(key=lambda x: x.get("pos", 0))
+    return dataflow
+
 
 def extract_params(docstring: str, language: str) -> List[Dict[str, str]]:
     """Extract @param / Args sections from a docstring for the given language."""

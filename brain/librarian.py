@@ -135,7 +135,7 @@ class LibrarianEngine:
         """Create standard vault directories."""
         dirs = [
             "symbols", "files", "behaviors", "behaviors/_json", "changes", "changes/recent",
-            "changes/archive", "rules", "narratives"
+            "changes/archive", "rules", "narratives", "blackboard"
         ]
         for d in dirs:
             os.makedirs(os.path.join(self.vault_path, d), exist_ok=True)
@@ -245,185 +245,58 @@ class LibrarianEngine:
             raise ValueError(f"Security Risk: Path traversal detected: {target}")
         return target
 
+    def _get_symbol_header_id(self, symbol_name: str, file_path: str = None) -> str:
+        """Extracts the qualified class/method name from a symbol name to use as a unique heading ID."""
+        if file_path and symbol_name.startswith(file_path + ":"):
+            return symbol_name[len(file_path)+1:]
+        if ":" in symbol_name:
+            parts = symbol_name.split(":")
+            # If the first part looks like a file path, strip it
+            if "/" in parts[0] or "\\" in parts[0] or "." in parts[0]:
+                return ":".join(parts[1:])
+        return symbol_name
+
+    def _get_symbol_wikilink(self, symbol_name: str, file_path: str = None) -> str:
+        """Generates a wikilink to a symbol aggregated inside its file page using its qualified heading ID."""
+        if not file_path and ":" in symbol_name:
+            parts = symbol_name.split(":")
+            file_path = parts[0]
+        header_id = self._get_symbol_header_id(symbol_name, file_path)
+        display_name = header_id.split(":")[-1]
+        if file_path:
+            safe_file = self._get_safe_filename(file_path)
+            return f"[[files/{safe_file}#Symbol: {header_id}\\|{display_name}]]"
+        return f"`{display_name}`"
+
     def export_symbol(self, symbol_data: dict):
+        """Deprecated: Symbols are now aggregated inside file pages to prevent vault overpopulation.
+        Still calculates and saves confidence scores to the database for analysis."""
         name = symbol_data.get("name")
         if not name: return
         if ".." in name or name.startswith("/") or name.startswith("\\"):
             raise ValueError(f"Security Risk: Path traversal detected in symbol name: {name}")
-        # If qualified, extract short name for display
-        display_name = name.split(":")[-1] if ":" in name else name
-        safe_name = self._get_safe_filename(name)
-        filepath = self._safe_path("symbols", f"{safe_name}.md")
-        kind = symbol_data.get("kind", "Function")
+            
+        has_docstring = 1 if symbol_data.get("docstring") else 0
+        has_taint = 1 if any("TAINT" in str(k).upper() or "TAINT" in str(v).upper() for k, v in symbol_data.get("variable_states", {}).items()) else 0
+        entanglement_count = len(symbol_data.get("callees", []))
+        caller_count = len(symbol_data.get("callers", []))
         
-        frontmatter = {
-            "type": "symbol",
-            "kind": kind,
-            "name": name,
-            "language": symbol_data.get("language"),
-            "file": symbol_data.get("file"),
-            "signature": symbol_data.get("signature"),
-            "mass": symbol_data.get("mass"),
-            "potential_energy": symbol_data.get("potential_energy"),
-            "archetype": symbol_data.get("archetype"),
-            "line": symbol_data.get("line"),
-            "line_range": symbol_data.get("line_range")
-        }
+        confidence = (has_docstring * 0.4) + (has_taint * 0.3) + (entanglement_count * 0.2) + (caller_count * 0.1)
         
-        badge = "🔧"
-        if kind == "Class": badge = "🏛️"
-        elif kind == "Interface": badge = "📑"
-        elif kind == "Enum": badge = "🗳️"
-        elif kind == "Variable": badge = "📌"
-        elif kind == "Module": badge = "📦"
-        elif kind == "Method": badge = "⚡"
-
-        with open(filepath, "w", encoding="utf-8") as f:
-            f.write("---\n")
-            yaml.safe_dump(frontmatter, f, default_flow_style=False)
-            f.write("---\n\n")
-            f.write(f"# {badge} {kind}: {display_name}\n\n")
-            if symbol_data.get("line") is not None:
-                f.write(f"**Line:** {symbol_data.get('line')}\n\n")
+        if confidence < 0.1:
+            tier = "skip"
+        elif confidence < 0.5:
+            tier = "stub"
+        else:
+            tier = "full"
             
-            f.write("## Semantic Context\n")
-            if symbol_data.get("archetype"):
-                f.write(f"- **Archetype:** {symbol_data.get('archetype')}\n")
-            if symbol_data.get("mass") is not None:
-                f.write(f"- **Cognitive Mass:** {symbol_data.get('mass'):.2f}\n")
-            if symbol_data.get("potential_energy") is not None:
-                f.write(f"- **Potential Energy:** {symbol_data.get('potential_energy'):.2f}\n")
-            f.write("\n")
-            if symbol_data.get("docstring"):
-                f.write(f"## Documentation\n{symbol_data.get('docstring')}\n\n")
-            
-            var_states = symbol_data.get("variable_states", {})
-            flow_paths = symbol_data.get("flow_paths", [])
-            
-            # Members section for Classes and Enums
-            if kind in ("Class", "Enum", "Interface"):
-                f.write("## Members\n")
-                # Try both qualified and display name
-                symbol_meta = var_states.get(name) or var_states.get(display_name)
-                methods = symbol_meta.get("methods", []) if isinstance(symbol_meta, dict) else []
-                if methods:
-                    f.write("### Methods\n")
-                    for m in methods:
-                        f.write(f"- [[symbols/{self._get_safe_filename(name + ':' + m)}\\|{m}]] \n")
-                    f.write("\n")
+        if self.indexer and getattr(self.indexer, "persistence", None):
+            self.indexer.persistence.save_symbol_confidence(name, confidence, tier)
 
-                # Extract properties
-                props = symbol_meta.get("properties", {}) if isinstance(symbol_meta, dict) else {}
-                if props:
-                    f.write("### Properties\n")
-                    f.write("| Property | Type | Visibility | Default |\n")
-                    f.write("|:---|:---|:---|:---|\n")
-                    for p_name, p_info in props.items():
-                        f.write(f"| `${p_name}` | `{p_info.get('type', 'unknown')}` | {p_info.get('visibility', '—')} | `{p_info.get('default', '—')}` |\n")
-                    f.write("\n")
 
-            if var_states:
-                f.write("## Data Model & Constraints\n")
-                f.write("| Variable | Type | State | Properties / Constraints |\n")
-                f.write("|:---|:---|:---|:---|\n")
-                for var, data in var_states.items():
-                    if var == name: continue # Skip the class definition itself here
-                    state = data.get("state", "CONSTANT")
-                    vtype = data.get("type", "unknown")
-                    details = []
-                    
-                    if state == "CONSTANT" and data.get("value"):
-                        val = data.get("value")
-                        source = data.get("source", "internal")
-                        details.append(f"value `{val}` (from `{source}`)")
-                    
-                    props = data.get("properties", {})
-                    if isinstance(props, dict):
-                        for p, pdata in props.items():
-                            details.append(f"prop `{p}` ({pdata.get('type')})")
-                    
-                    constraints = data.get("constraints", [])
-                    if isinstance(constraints, list):
-                        for c in list(set(constraints)):
-                            details.append(f"check `{c}`")
-                            
-                    details_str = ", ".join(details) if details else "—"
-                    f.write(f"| `{var}` | `{vtype}` | `{state}` | {details_str} |\n")
-                f.write("\n")
-                
-            if flow_paths:
-                f.write("## Dataflow Graph\n")
-                f.write("```mermaid\n")
-                f.write("graph LR\n")
-                for i, path in enumerate(flow_paths):
-                    src = str(path.get("source", "internal")).replace('"', "'")
-                    sink = str(path.get("sink", "unknown")).replace('"', "'")
-                    var = str(path.get("variable", "data")).replace('"', "'")
-                    state = path.get("state", "UNKNOWN")
-                    vtype = path.get("type", "")
-                    line = f":{path.get('line')}" if path.get("line") else ""
-                    label = f"{var}{line}:{vtype} ({state})" if vtype else f"{var}{line} ({state})"
-                    f.write(f'  P{i}_SRC["{src}"] -- "{label}" --> P{i}_SINK["{sink}"]\n')
-                f.write("```\n\n")
 
-            if symbol_data.get("params"):
-                f.write("## Parameters\n")
-                for param in symbol_data.get("params", []):
-                    f.write(f"- `{param.get('name')}` ({param.get('type')}): {param.get('description', '')}\n")
-                f.write("\n")
-            if symbol_data.get("returns"):
-                ret = symbol_data.get("returns")
-                rtype = ret.get("type") if isinstance(ret, dict) else (ret if isinstance(ret, str) else "")
-                rdesc = ret.get("description", "") if isinstance(ret, dict) else ""
-                if rtype or rdesc:
-                    f.write(f"## Returns\n`{rtype}`: {rdesc}\n\n")
-            
-            if symbol_data.get("semantic_neighbors"):
-                f.write("## Semantic Neighbors\n")
-                for neighbor, sim in symbol_data["semantic_neighbors"]:
-                    f.write(f"- [[symbols/{self._get_safe_filename(neighbor)}\\|{neighbor.split(':')[-1]}]] ({sim * 100:.1f}% similarity)\n")
-                f.write("\n")
-            
-            callers = symbol_data.get("callers", [])
-            callees = symbol_data.get("callees", [])
-            if callers or callees:
-                f.write("## Entanglements\n")
-                if callers:
-                    f.write("### Inbound Callers\n")
-                    for caller in callers:
-                        f.write(f"- [[symbols/{self._get_safe_filename(caller)}\\|{caller.split(':')[-1]}]] \n")
-                if callees:
-                    f.write("### Outbound Callees\n")
-                    for callee in callees:
-                        f.write(f"- [[symbols/{self._get_safe_filename(callee)}\\|{callee.split(':')[-1]}]] \n")
-                f.write("\n")
-                
-            if symbol_data.get("business_rules"):
-                f.write("## Business Rules\n")
-                for rule in symbol_data.get("business_rules", []):
-                    f.write(f"- {rule}\n")
-                f.write("\n")
-
-            if symbol_data.get("vulnerabilities"):
-                f.write("## Security Findings\n")
-                for vuln in symbol_data.get("vulnerabilities", []):
-                    f.write(f"- **{vuln.get('severity', 'LOW')}**: {vuln.get('message') or vuln.get('description')}\n")
-                f.write("\n")
-
-            if symbol_data.get("code_snippet"):
-                f.write("## Implementation\n")
-                lang = symbol_data.get("language") or "generic"
-                f.write(f"```{lang}\n")
-                f.write(symbol_data["code_snippet"])
-                f.write("\n```\n")
-            
-            behaviors = symbol_data.get("behaviors", [])
-            if behaviors:
-                f.write("## Related Behaviors\n")
-                for b in sorted(list(set(behaviors))):
-                    f.write(f"- [[behaviors/{self._get_safe_filename(b)}\\|{b}]]\n")
-                f.write("\n")
     def export_file(self, file_data: dict):
+
         file_path = file_data.get("file_path")
         if not file_path: return
         safe_name = self._get_safe_filename(file_path)
@@ -459,6 +332,7 @@ class LibrarianEngine:
             if file_data.get("archetypes"):
                 f.write(f"- **Archetypes:** {', '.join(file_data.get('archetypes'))}\n")
             f.write("\n")
+            
             var_states = file_data.get("variable_states", {})
             if var_states:
                 f.write("## File-Level Data Model\n")
@@ -490,7 +364,7 @@ class LibrarianEngine:
 
             symbols_data = file_data.get("symbols_data", [])
             if symbols_data:
-                f.write("## Symbols and Logic\n")
+                f.write("## Symbols Index\n")
                 f.write("| Symbol | Kind | Line | Signature | Description |\n")
                 f.write("|:---|:---|:---|:---|:---|\n")
                 for s in symbols_data:
@@ -499,21 +373,116 @@ class LibrarianEngine:
                     line = s.get("line", "—")
                     sig = s.get("signature") or name
                     doc = (s.get("docstring") or "").split("\n")[0]
+                    header_id = self._get_symbol_header_id(name, file_path)
                     display_name = name.split(":")[-1] if ":" in name else name
-                    f.write(f"| [[symbols/{self._get_safe_filename(name)}\\|{display_name}]] | `{kind}` | {line} | `{sig}` | {doc} |\n")
+                    # Link to the local heading on this same page
+                    f.write(f"| [[#Symbol: {header_id}\\|{display_name}]] | `{kind}` | {line} | `{sig}` | {doc} |\n")
                 f.write("\n")
+
+                f.write("## Detailed Symbol Specifications\n\n")
+                for s in symbols_data:
+                    name = s.get("name")
+                    header_id = self._get_symbol_header_id(name, file_path)
+                    display_name = name.split(":")[-1] if ":" in name else name
+                    kind = s.get("kind", "Function")
+                    line = s.get("line", "—")
+                    sig = s.get("signature") or name
+                    doc = s.get("docstring") or ""
+                    mass = s.get("mass", 1.0)
+                    pe = s.get("potential_energy", 0.0)
+                    archetype = s.get("archetype", "generic")
+                    
+                    badge = "🔧"
+                    if kind == "Class": badge = "🏛️"
+                    elif kind == "Interface": badge = "📑"
+                    elif kind == "Enum": badge = "🗳️"
+                    elif kind == "Variable": badge = "📌"
+                    elif kind == "Module": badge = "📦"
+                    elif kind == "Method": badge = "⚡"
+                    
+                    f.write(f"### Symbol: {header_id}\n")
+                    f.write(f"- **Kind:** `{kind}`\n")
+                    f.write(f"- **Line:** {line}\n")
+                    f.write(f"- **Archetype:** `{archetype}`\n")
+                    f.write(f"- **Cognitive Mass:** `{mass:.2f}`\n")
+                    f.write(f"- **Potential Energy:** `{pe:.2f}`\n")
+                    if sig:
+                        f.write(f"- **Signature:** `{sig}`\n")
+                    f.write("\n")
+
+                    
+                    if doc:
+                        f.write(f"#### Documentation\n{doc}\n\n")
+                        
+                    s_params = s.get("params", [])
+                    if s_params:
+                        f.write("#### Parameters\n")
+                        for param in s_params:
+                            f.write(f"- `{param.get('name')}` ({param.get('type')}): {param.get('description', '')}\n")
+                        f.write("\n")
+                        
+                    s_returns = s.get("returns")
+                    if s_returns:
+                        rtype = s_returns.get("type") if isinstance(s_returns, dict) else (s_returns if isinstance(s_returns, str) else "")
+                        rdesc = s_returns.get("description", "") if isinstance(s_returns, dict) else ""
+                        if rtype or rdesc:
+                            f.write(f"#### Returns\n`{rtype}`: {rdesc}\n\n")
+                            
+                    callers = s.get("callers", [])
+                    callees = s.get("callees", [])
+                    if callers or callees:
+                        f.write("#### Entanglements\n")
+                        if callers:
+                            f.write("##### Inbound Callers\n")
+                            for caller in callers:
+                                f.write(f"- {self._get_symbol_wikilink(caller)}\n")
+                        if callees:
+                            f.write("##### Outbound Callees\n")
+                            for callee in callees:
+                                f.write(f"- {self._get_symbol_wikilink(callee)}\n")
+                        f.write("\n")
+                        
+                    s_rules = s.get("business_rules", [])
+                    if s_rules:
+                        f.write("#### Business Rules\n")
+                        for rule in s_rules:
+                            f.write(f"- {rule}\n")
+                        f.write("\n")
+                        
+                    s_vulns = s.get("vulnerabilities", [])
+                    if s_vulns:
+                        f.write("#### Security Findings\n")
+                        for vuln in s_vulns:
+                            f.write(f"- **{vuln.get('severity', 'LOW')}**: {vuln.get('message') or vuln.get('description')}\n")
+                        f.write("\n")
+                        
+                    s_code = s.get("code_snippet", "")
+                    if s_code:
+                        f.write("#### Implementation\n")
+                        lang = s.get("language") or "generic"
+                        f.write(f"```{lang}\n")
+                        # Cap code snippet to 40 lines
+                        lines = s_code.splitlines()
+                        if len(lines) > 40:
+                            f.write("\n".join(lines[:40]))
+                            f.write(f"\n\n[... Truncated {len(lines) - 40} lines. View source file at line {line} ...]\n")
+                        else:
+                            f.write(s_code)
+                        f.write("\n```\n\n")
+                    
+                    f.write("---\n\n")
 
                 all_rules = []
                 for s in symbols_data:
                     for rule in s.get("business_rules", []):
-                        all_rules.append(f"- **{s.get('name')}**: {rule}")
+                        all_rules.append(f"- **{self._get_symbol_wikilink(s.get('name'))}**: {rule}")
                 
                 if all_rules:
                     f.write("## Business Logic & Requirements\n")
                     for rule in all_rules:
                         f.write(f"{rule}\n")
                     f.write("\n")
-
+ 
                 all_flows = []
                 for s in symbols_data:
                     for flow in s.get("flow_paths", []):
@@ -530,23 +499,19 @@ class LibrarianEngine:
                     f.write("| Source | Variable | State | Sink | Line |\n")
                     f.write("|:---|:---|:---|:---|:---|\n")
                     for flow in all_flows:
-                        f.write(f"| `{flow['source']}` | `{flow['variable']}` | `{flow['state']}` | `{flow['sink'] or 'internal'}` | {flow.get('line', '—')} |\n")
+                        source_link = self._get_symbol_wikilink(flow['source'])
+                        sink_link = self._get_symbol_wikilink(flow['sink']) if flow['sink'] and flow['sink'] != 'internal' else '`internal`'
+                        f.write(f"| {source_link} | `{flow['variable']}` | `{flow['state']}` | {sink_link} | {flow.get('line', '—')} |\n")
                     f.write("\n")
-
-            symbols = file_data.get("symbols", [])
-            if symbols:
-                f.write("## Navigation\n")
-                for s in symbols:
-                    display_s = s.split(":")[-1] if ":" in s else s
-                    f.write(f"- [[symbols/{self._get_safe_filename(s)}\\|{display_s}]]\n")
-                f.write("\n")
-                
+ 
             behaviors = file_data.get("behaviors", [])
             if behaviors:
                 f.write("## Related Behaviors\n")
                 for b in sorted(list(set(behaviors))):
                     f.write(f"- [[behaviors/{self._get_safe_filename(b)}\\|{b}]]\n")
                 f.write("\n")
+
+
 
     def _make_transition_label(self, caller_name: str, callee_name: str, funcs: List[dict], sym_meta: dict) -> str:
         caller_obj = next((f for f in funcs if f.get("name") == caller_name), None)
@@ -584,16 +549,30 @@ class LibrarianEngine:
         return ", ".join(parts) if parts else ""
 
     def generate_behavior_model(self, entrypoint_func: str, entrypoint_path: str, calls_map: dict, funcs: List[dict], sym_meta: dict, scenario_constraints: List[str] = None, max_depth: int = 10, max_states: int = 50) -> dict:
+        """
+        Generates a behavioral flow model from an entrypoint using context-preserving DFS
+        and utility hub pruning. Preserves sequential execution order.
+        """
         states: set = {entrypoint_func}
         transitions = []
-        # Initialize queue with scenario constraints if provided to influence behavior split
+        
+        # 1. Identify utility hubs (functions with high fan-in) to prune traversal explosion
+        fan_in_counts = {}
+        for caller, data in calls_map.items():
+            for callee in data.get("callees", []):
+                fan_in_counts[callee] = fan_in_counts.get(callee, 0) + 1
+            for callee_det, _ in data.get("callees_detailed", []):
+                fan_in_counts[callee_det] = fan_in_counts.get(callee_det, 0) + 1
+
         initial_condition = " AND ".join(scenario_constraints) if scenario_constraints else None
-        queue = deque([(entrypoint_func, None, 0, initial_condition)]) # (current, caller, depth, condition)
+        # Stack elements: (current, caller, depth, condition)
+        stack = [(entrypoint_func, None, 0, initial_condition)]
         visited = set()
 
-        while queue:
-            if len(states) >= max_states: break
-            current, caller, depth, condition = queue.popleft()
+        while stack:
+            if len(states) >= max_states:
+                break
+            current, caller, depth, condition = stack.pop()
             
             # Resolve to fully qualified name if current is unqualified
             q_name = None
@@ -616,6 +595,10 @@ class LibrarianEngine:
                 })
                 states.add(current)
             
+            # Hub pruning: if a function is called by more than 8 different functions,
+            # we treat it as a utility leaf node and do not traverse deeper.
+            is_hub = fan_in_counts.get(lookup_key, 0) > 8
+            
             # Prune/ignore setup and config calls from other entrypoints
             is_setup_config = False
             symbol_file = sym_meta.get(lookup_key, {}).get("file") or (lookup_key if lookup_key.endswith(".php") or lookup_key.endswith(".php.dist") else None)
@@ -632,12 +615,16 @@ class LibrarianEngine:
                 if any(re.match(pattern, file_name, re.IGNORECASE) for pattern in setup_patterns):
                     is_setup_config = True
             
-            if is_setup_config:
+            if is_setup_config or is_hub:
                 continue
 
             if depth < max_depth:
                 if lookup_key not in visited:
                     visited.add(lookup_key)
+                    
+                    next_nodes = []
+                    
+                    # A. Call graph callees
                     detailed_next = calls_map.get(lookup_key, {}).get("callees_detailed", [])
                     if detailed_next:
                         for nc, cond in detailed_next:
@@ -654,11 +641,12 @@ class LibrarianEngine:
                                             break
                                 if is_incompatible:
                                     continue
-                            queue.append((nc, current, depth + 1, cond))
+                            next_nodes.append((nc, cond))
                     else:
                         for nc in calls_map.get(lookup_key, {}).get("callees", []):
-                            queue.append((nc, current, depth + 1, None))
+                            next_nodes.append((nc, None))
 
+                    # B. Synthesized calls (dataflow / sink calls)
                     current_obj = next((f for f in funcs if f.get("name") == lookup_key), None)
                     if current_obj and "dataflow" in current_obj:
                         for atom in current_obj["dataflow"]:
@@ -687,15 +675,89 @@ class LibrarianEngine:
                                         "variable_states": {},
                                         "flow_paths": []
                                     }
-                                queue.append((synth_name, current, depth + 1, None))
+                                next_nodes.append((synth_name, None))
+                    
+                    # Push children onto the stack in reverse order to preserve left-to-right execution flow
+                    for nc, cond in reversed(next_nodes):
+                        stack.append((nc, current, depth + 1, cond))
         
-        is_hub = len(transitions) > 15
+        is_hub_map = len(transitions) > 15
         return {
             "entrypoint": entrypoint_func,
             "states": list(states),
             "transitions": transitions,
             "state_meta": sym_meta,
-            "is_macro_map": is_hub
+            "is_macro_map": is_hub_map
+        }
+
+
+    def _analyze_behavioral_characteristics(self, state_name: str, state_meta: dict) -> dict:
+        code = state_meta.get("code_snippet", "")
+        # Fallback to check if we can query it or if it is a synthesized state
+        if not code:
+            # If it's a synthesized redirect/sink/etc.
+            if state_name.startswith("[") or state_name.startswith("Redirect:"):
+                has_recovery = "try" in state_name.lower() or "catch" in state_name.lower()
+                has_perf = any(x in state_name.lower() for x in ["query", "http", "curl", "request", "timeout"])
+                return {
+                    "loops": "none",
+                    "conditions": "none",
+                    "boundaries": "none",
+                    "recovery": "exception handling / try-catch" if has_recovery else "none",
+                    "performance": "database/network operations" if has_perf else "none"
+                }
+            return {
+                "loops": "none",
+                "conditions": "none",
+                "boundaries": "none",
+                "recovery": "none",
+                "performance": "none"
+            }
+            
+        code_no_comments = code
+        if code:
+            code_no_comments = re.sub(r'/\*.*?\*/', '', code, flags=re.DOTALL)
+            code_no_comments = re.sub(r'"""\s*.*?\s*"""', '', code_no_comments, flags=re.DOTALL)
+            code_no_comments = re.sub(r"'''\s*.*?\s*'''", '', code_no_comments, flags=re.DOTALL)
+            code_no_comments = re.sub(r'//.*', '', code_no_comments)
+            code_no_comments = re.sub(r'#.*', '', code_no_comments)
+            
+        # 1. Loops
+        loops = []
+        if re.search(r'\b(?:for|while|foreach)\b', code_no_comments):
+            loops.append("loop (for/while/foreach)")
+        
+        # 2. Conditions
+        conditions = []
+        if re.search(r'\b(?:if|else|elseif|switch|case)\b', code_no_comments):
+            conditions.append("conditionals (if/else/switch)")
+            
+        # 3. Boundary Values & Equivalence Partitioning
+        boundaries = []
+        bound_matches = re.findall(r'([\w\.\$]+(?:\[[^\]]+\])?)\s*(>=|<=|==|!=|<|>)\s*([\w\.\$]+|["\']\w*["\'])', code_no_comments)
+        for match in bound_matches:
+            boundaries.append(f"`{' '.join(match)}`")
+            
+        # 4. Recovery
+        recovery = []
+        if re.search(r'\b(?:try|catch|except|finally)\b', code_no_comments):
+            recovery.append("exception handling / try-catch")
+            
+        # 5. Stress & Performance
+        performance = []
+        if "timeout" in code_no_comments.lower():
+            performance.append("timeout configuration")
+        if re.search(r'\b(?:select|insert|update|delete|query|prepare|db)\b', code_no_comments, re.IGNORECASE):
+            performance.append("database operations")
+        if re.search(r'\b(?:curl|request|http|socket)\b', code_no_comments, re.IGNORECASE):
+            performance.append("network/external operations")
+            
+        return {
+            "loops": ", ".join(loops) if loops else "none",
+            "conditions": ", ".join(conditions) if conditions else "none",
+            "boundaries": ", ".join(list(set(boundaries))[:4]) if boundaries else "none",
+            "recovery": ", ".join(recovery) if recovery else "none",
+            "performance": ", ".join(performance) if performance else "none"
         }
 
     def export_behavior(self, behavior_data: dict):
@@ -922,6 +984,17 @@ class LibrarianEngine:
                 f.write(f"| {link_str} | {pe} | {arch} | {params_str} | {returns_str} | {invariants_str} | {summary} |\n")
             f.write("\n")
 
+            # Behavioral Characteristics & Safety Constraints
+            f.write("## Behavioral Characteristics & Safety Constraints\n\n")
+            f.write("| State | Loops | Conditions | Boundaries / Equivalence | Recovery | Stress / Performance |\n")
+            f.write("| :--- | :--- | :--- | :--- | :--- | :--- |\n")
+            for s in states:
+                s_meta = meta.get(s, {})
+                char = self._analyze_behavioral_characteristics(s, s_meta)
+                display_s = self._sanitize_for_table(s.split(':')[-1])
+                f.write(f"| `{display_s}` | {char['loops']} | {char['conditions']} | {char['boundaries']} | {char['recovery']} | {char['performance']} |\n")
+            f.write("\n")
+
             # Track A.1 Variable and Taint table with Semantic Labels
             if sidecar_variables:
                 f.write("## Dynamic Variable Tracking\n\n")
@@ -1044,7 +1117,10 @@ class LibrarianEngine:
             f.write("# Docstring & Quality Invariants Warnings\n\n")
             f.write("| Symbol | File | Warnings |\n")
             f.write("|:---|:---|:---|\n")
-            for w in warnings: f.write(f"| [[symbols/{self._get_safe_filename(w['name'])}\\|{w['name'].split(':')[-1]}]] | {w['file']} | {', '.join(w['warnings'])} |\n")
+            for w in warnings:
+                symbol_link = self._get_symbol_wikilink(w['name'], w['file'])
+                f.write(f"| {symbol_link} | {w['file']} | {', '.join(w['warnings'])} |\n")
+
 
     def export_prerequisites(self, setup_files: List[str], registry):
         """Generates a centralized prerequisites.md to document bootstrapping requirements."""
@@ -1061,8 +1137,16 @@ class LibrarianEngine:
                 for sf in sorted(setup_files):
                     rel_sf = os.path.relpath(sf, self.repo_path).replace("\\", "/")
                     safe_sf = self._get_safe_filename(rel_sf)
-                    f.write(f"- **File**: [[files/{safe_sf}\\|{rel_sf}]]\n")
-                    f.write(f"  - **Behavior Model**: [[behaviors/{safe_sf}\\|View behavior model]]\n")
+                    file_exists = os.path.exists(os.path.join(self.vault_path, "files", f"{safe_sf}.md"))
+                    behavior_exists = os.path.exists(os.path.join(self.vault_path, "behaviors", f"{safe_sf}.md"))
+                    
+                    if file_exists:
+                        f.write(f"- **File**: [[files/{safe_sf}|{rel_sf}]]\n")
+                    else:
+                        f.write(f"- **File**: `{rel_sf}`\n")
+                        
+                    if behavior_exists:
+                        f.write(f"  - **Behavior Model**: [[behaviors/{safe_sf}|View behavior model]]\n")
             f.write("\n")
             
             f.write("## 2. Configuration Settings & Global Constants\n\n")
@@ -1075,9 +1159,14 @@ class LibrarianEngine:
                 for name, value in sorted(registry.constants.items()):
                     origin = registry.get_origin(name) or "unknown"
                     safe_origin = self._get_safe_filename(origin)
+                    origin_exists = os.path.exists(os.path.join(self.vault_path, "files", f"{safe_origin}.md"))
                     is_secret = any(s in name.lower() for s in ["pass", "secret", "key", "token"])
                     masked_val = "********" if is_secret and value else str(value)
-                    f.write(f"| `{name}` | `{masked_val}` | [[files/{safe_origin}\\|{origin}]] |\n")
+                    
+                    if origin_exists:
+                        f.write(f"| `{name}` | `{masked_val}` | [[files/{safe_origin}|{origin}]] |\n")
+                    else:
+                        f.write(f"| `{name}` | `{masked_val}` | `{origin}` |\n")
             f.write("\n")
             
             f.write("## 3. Third-Party Dependencies & Features\n\n")
@@ -1142,7 +1231,7 @@ class LibrarianEngine:
             "gates": gates,
             "authenticated_zone": sorted(list(auth_caller_set)),
             "public_zone": sorted(list(all_syms - auth_caller_set)),
-            "generated_at": datetime.datetime.utcnow().isoformat()
+            "generated_at": datetime.datetime.now(datetime.UTC)
         }
         
         rules_meta_dir = os.path.join(metadata_dir, "rules")
@@ -1162,8 +1251,8 @@ class LibrarianEngine:
                 f.write("| Auth Gate Symbol | Inbound Callers | Confidence |\n")
                 f.write("| :--- | :--- | :--- |\n")
                 for g in gates:
-                    short_sym = g["symbol"].split(":")[-1]
-                    f.write(f"| [[symbols/{self._get_safe_filename(g['symbol'])}\\|{short_sym}]] | {len(g['callers'])} | {g['gate_confidence'] * 100:.1f}% |\n")
+                    symbol_link = self._get_symbol_wikilink(g["symbol"])
+                    f.write(f"| {symbol_link} | {len(g['callers'])} | {g['gate_confidence'] * 100:.1f}% |\n")
             f.write("\n")
             
             f.write("## Authenticated Zone (Callers of Auth Gates)\n\n")
@@ -1171,9 +1260,10 @@ class LibrarianEngine:
                 f.write("*No symbols in authenticated zone.*\n")
             else:
                 for c in sorted(list(auth_caller_set)):
-                    short_c = c.split(":")[-1]
-                    f.write(f"- [[symbols/{self._get_safe_filename(c)}\\|{short_c}]]\n")
+                    symbol_link = self._get_symbol_wikilink(c)
+                    f.write(f"- {symbol_link}\n")
             f.write("\n")
+
 
     def export_vulnerabilities(self, vulns: List[dict]):
         """
@@ -1277,12 +1367,12 @@ class LibrarianEngine:
                     sev = v.get("severity", "LOW").upper()
                     icon = SEVERITY_ICON.get(sev, "")
                     name = v.get("function") or v.get("name") or "unknown"
-                    safe_link = v.get("safe_link") or self._get_safe_filename(name)
-                    display_name = name.split(":")[-1]
                     file_path = v.get("file", "unknown")
+                    symbol_link = self._get_symbol_wikilink(name, file_path)
                     desc = (v.get("description") or v.get("message") or "").replace("|", "\\|")
-                    f.write(f"| {icon} {sev} | [[symbols/{safe_link}\\|{display_name}]] | {file_path} | {desc} |\n")
+                    f.write(f"| {icon} {sev} | {symbol_link} | {file_path} | {desc} |\n")
                 f.write("\n")
+
 
             # ── CWE Top 40 Coverage Matrix ────────────────────────────────────
             f.write("---\n\n## CWE Top 40 Detection Coverage\n\n")
@@ -1352,11 +1442,15 @@ class LibrarianEngine:
             f.write("## 🏋️ Complexity Hotspots (Highest Mass)\n")
             f.write("| Symbol | File | Mass | Archetype |\n")
             f.write("|:---|:---|:---|:---|\n")
-            for h in hotspots.get("complexity", []): f.write(f"| [[symbols/{self._get_safe_filename(h['name'])}\\|{h['name'].split(':')[-1]}]] | {h.get('file', 'unknown')} | {h['mass']:.1f} | {h.get('archetype', '—')} |\n")
+            for h in hotspots.get("complexity", []):
+                symbol_link = self._get_symbol_wikilink(h['name'], h.get('file'))
+                f.write(f"| {symbol_link} | {h.get('file', 'unknown')} | {h['mass']:.1f} | {h.get('archetype', '—')} |\n")
             f.write("\n## ⚡ Attention Hotspots (Highest Drift / Attention Debt)\n")
             f.write("| Symbol | File | Potential Energy | Archetype |\n")
             f.write("|:---|:---|:---|:---|\n")
-            for h in hotspots.get("attention", []): f.write(f"| [[symbols/{self._get_safe_filename(h['name'])}\\|{h['name'].split(':')[-1]}]] | {h.get('file', 'unknown')} | {h['potential_energy']:.2f} | {h.get('archetype', '—')} |\n")
+            for h in hotspots.get("attention", []):
+                symbol_link = self._get_symbol_wikilink(h['name'], h.get('file'))
+                f.write(f"| {symbol_link} | {h.get('file', 'unknown')} | {h['potential_energy']:.2f} | {h.get('archetype', '—')} |\n")
 
     def export_archetypes(self, groups: dict):
         filepath = self._safe_path("rules", "archetypes.md")
@@ -1368,8 +1462,10 @@ class LibrarianEngine:
                 f.write(f"## {title_arch} (Narrative: [[narratives/archetype_{safe_arch}]])\n")
                 for s in symbols[:15]:
                     conf_str = f" (Confidence: {s['confidence']:.2%})" if "confidence" in s else ""
-                    f.write(f"- [[symbols/{self._get_safe_filename(s['name'])}\\|{s['name'].split(':')[-1]}]] {conf_str}\n")
+                    symbol_link = self._get_symbol_wikilink(s['name'], s.get('file'))
+                    f.write(f"- {symbol_link}{conf_str}\n")
                 f.write("\n")
+
 
     def export_branch_diff(self, diff: dict):
         filepath = self._safe_path("changes", "branch_diff.md")
@@ -1383,3 +1479,138 @@ class LibrarianEngine:
             for fl in diff.get("files", []):
                 safe_file = self._get_safe_filename(fl['file'])
                 f.write(f"| [[files/{safe_file}\\|{fl['file']}]] | {fl.get('status')} | {fl.get('churn')} | {fl.get('relevance_score')} |\n")
+
+    def export_blackboard_note(self, drift_events, correlation_events=None):
+        """Export a blackboard note documenting system drift and cognitive deviations."""
+        import datetime
+        now = datetime.datetime.now()
+        timestamp_str = now.strftime("%Y-%m-%d_%H%M%S")
+        filename = f"{timestamp_str}.md"
+        filepath = os.path.join(self.vault_path, "blackboard", filename)
+        
+        event_count = len(drift_events) + (len(correlation_events) if correlation_events else 0)
+        
+        tier_max = 0
+        severity_max = "INFO"
+        
+        severity_hierarchy = {"INFO": 1, "WARN": 2, "CRITICAL": 3}
+        for e in drift_events:
+            if e.tier > tier_max:
+                tier_max = e.tier
+            if severity_hierarchy.get(e.severity, 1) > severity_hierarchy.get(severity_max, 1):
+                severity_max = e.severity
+                
+        frontmatter = (
+            "---\n"
+            "type: blackboard\n"
+            f"generated_at: {now.isoformat()}\n"
+            f"tier_max: {tier_max}\n"
+            f"event_count: {event_count}\n"
+            f"severity_max: {severity_max}\n"
+            "---\n\n"
+        )
+        
+        content = frontmatter
+        content += f"# Blackboard Audit Note — {now.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        
+        content += "## 📡 Drift Events\n\n"
+        if drift_events:
+            content += "| File | Event | Tier | Severity | Detail |\n"
+            content += "| --- | --- | --- | --- | --- |\n"
+            for e in drift_events:
+                content += f"| {e.file_path} | {e.event_type} | {e.tier} | {e.severity} | {self._sanitize_for_table(e.detail)} |\n"
+        else:
+            content += "No structural/filesystem drift events detected.\n"
+        content += "\n"
+        
+        tombstones = [e for e in drift_events if e.event_type == "TOMBSTONE"]
+        content += "## 💀 Tombstones\n\n"
+        if tombstones:
+            for e in tombstones:
+                content += f"- [[symbols/{self._get_safe_filename(e.file_path)}.md]] (stale graph node)\n"
+        else:
+            content += "No tombstones detected.\n"
+        content += "\n"
+        
+        unindexed = [e for e in drift_events if e.event_type == "UNINDEXED"]
+        content += "## 🆕 Unindexed Files\n\n"
+        if unindexed:
+            for e in unindexed:
+                content += f"- {e.file_path}\n"
+        else:
+            content += "No unindexed files detected.\n"
+        content += "\n"
+        
+        content += "## 🔀 Semantic Flips\n\n"
+        content += "No semantic flips detected.\n\n"
+        
+        content += "## 👻 Decoherence\n\n"
+        content += "No decoherence events detected.\n"
+        
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    def prune_stale_pages(self, tombstoned_files: list):
+        """
+        Tombstone-aware pruning: scan symbols/, files/, and behaviors/ directories.
+        Delete pages whose YAML frontmatter matches any path in tombstoned_files.
+        Never touches changes/ or blackboard/.
+        """
+        if not tombstoned_files:
+            return
+            
+        tombstone_set = set(tombstoned_files)
+        dirs_to_prune = ["symbols", "files", "behaviors"]
+        
+        for d in dirs_to_prune:
+            target_dir = os.path.join(self.vault_path, d)
+            if not os.path.exists(target_dir):
+                continue
+                
+            for file in os.listdir(target_dir):
+                if not file.endswith(".md"):
+                    continue
+                filepath = os.path.join(target_dir, file)
+                
+                try:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        lines = f.readlines()
+                    
+                    doc_type = None
+                    file_val = None
+                    
+                    if lines and lines[0].strip() == "---":
+                        yaml_lines = []
+                        for line in lines[1:]:
+                            if line.strip() == "---":
+                                break
+                            yaml_lines.append(line)
+                        
+                        for y_line in yaml_lines:
+                            if ":" in y_line:
+                                k, v = y_line.split(":", 1)
+                                k_clean = k.strip()
+                                v_clean = v.strip().strip("'\" ")
+                                if k_clean == "type":
+                                    doc_type = v_clean
+                                elif k_clean in ("file", "file_path", "entrypoint"):
+                                    file_val = v_clean
+                                    
+                    # Reconcile path matching based on doc_type
+                    should_remove = False
+                    if doc_type == "symbol" and file_val in tombstone_set:
+                        should_remove = True
+                    elif doc_type == "file" and file_val in tombstone_set:
+                        should_remove = True
+                    elif doc_type == "behavior" and file_val:
+                        # Entrypoint looks like: "src/app.py:main"
+                        symbol_file = file_val.split(":")[0] if ":" in file_val else file_val
+                        if symbol_file in tombstone_set:
+                            should_remove = True
+                            
+                    if should_remove:
+                        logger.info(f"Pruning stale page {filepath} (file metadata: {file_val})")
+                        os.remove(filepath)
+                except Exception as e:
+                    logger.warning(f"Failed to inspect/prune page {filepath}: {e}")
